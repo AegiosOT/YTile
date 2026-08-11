@@ -29,13 +29,16 @@ internal static class Program
         {
             case "state" or "pause" or "resume" or "retile" or "version" or "float" or "stop":
                 break;
-            case "layout" or "focus" or "move" when arg is not null:
+            case "layout" or "focus" or "move" or "workspace" or "send" when arg is not null:
                 break;
             case "layout":
                 Console.Error.WriteLine("usage: ytile layout <bsp|columns>");
                 return 2;
             case "focus" or "move":
                 Console.Error.WriteLine($"usage: ytile {cmd} <left|right|up|down>");
+                return 2;
+            case "workspace" or "send":
+                Console.Error.WriteLine($"usage: ytile {cmd} <1-9>");
                 return 2;
             default:
                 Console.Error.WriteLine($"ytile: unknown command '{cmd}'");
@@ -118,23 +121,35 @@ internal static class Program
         for (int m = 0; m < state.Monitors.Count; m++)
         {
             MonitorDto monitor = state.Monitors[m];
-            WorkspaceDto ws = monitor.Workspace;
             Console.WriteLine(
                 $"monitor {m} {monitor.Device}{(monitor.Primary ? " (primary)" : "")} " +
-                $"{monitor.WorkArea.W}x{monitor.WorkArea.H}@{monitor.WorkArea.X},{monitor.WorkArea.Y} [{ws.Layout}]");
-            for (int i = 0; i < ws.Windows.Count; i++)
-            {
-                WindowDto w = ws.Windows[i];
-                string marker = i == ws.Focused ? "*" : " ";
-                Console.WriteLine(
-                    $"  {marker} {i} 0x{w.Hwnd:X8} {w.Exe,-20} {w.Rect.W}x{w.Rect.H}@{w.Rect.X},{w.Rect.Y}  \"{w.Title}\"");
-            }
+                $"{monitor.WorkArea.W}x{monitor.WorkArea.H}@{monitor.WorkArea.X},{monitor.WorkArea.Y}");
 
-            // Null when talking to a daemon older than the floating layer.
-            foreach (WindowDto w in ws.Floating ?? [])
+            IReadOnlyList<WorkspaceDto> workspaces = monitor.Workspaces ?? [];
+            for (int n = 0; n < workspaces.Count; n++)
             {
-                Console.WriteLine(
-                    $"  ~   0x{w.Hwnd:X8} {w.Exe,-20} {w.Rect.W}x{w.Rect.H}@{w.Rect.X},{w.Rect.Y}  \"{w.Title}\" (floating)");
+                WorkspaceDto ws = workspaces[n];
+                bool active = n == monitor.Active;
+                // Empty inactive workspaces are noise.
+                if (!active && ws.Windows.Count == 0 && (ws.Floating?.Count ?? 0) == 0)
+                {
+                    continue;
+                }
+
+                Console.WriteLine($"  workspace {n + 1}{(active ? " (active)" : "")} [{ws.Layout}]");
+                for (int i = 0; i < ws.Windows.Count; i++)
+                {
+                    WindowDto w = ws.Windows[i];
+                    string marker = active && i == ws.Focused ? "*" : " ";
+                    Console.WriteLine(
+                        $"    {marker} {i} 0x{w.Hwnd:X8} {w.Exe,-20} {w.Rect.W}x{w.Rect.H}@{w.Rect.X},{w.Rect.Y}  \"{w.Title}\"");
+                }
+
+                foreach (WindowDto w in ws.Floating ?? [])
+                {
+                    Console.WriteLine(
+                        $"    ~   0x{w.Hwnd:X8} {w.Exe,-20} {w.Rect.W}x{w.Rect.H}@{w.Rect.X},{w.Rect.Y}  \"{w.Title}\" (floating)");
+                }
             }
         }
     }
@@ -147,13 +162,15 @@ internal static class Program
 
             usage: ytile <command>
 
-              state                     show monitors, windows, and layout
+              state                     show monitors, workspaces, and windows
               focus <left|right|up|down>   focus the window in that direction
               move  <left|right|up|down>   swap focused window in that direction
-              layout <bsp|columns>      set layout on the focused monitor
+              workspace <1-9>           switch the focused monitor's workspace
+              send <1-9>                send the focused window to a workspace
+              layout <bsp|columns>      set layout on the active workspace
               float                     toggle floating for the focused window
               retile                    recompute and apply the layout
-              pause                     stop reacting to window events
+              pause                     restore hidden windows, stop reacting
               resume                    resync from the OS and start tiling
               stop                      shut the daemon down
               version                   daemon version

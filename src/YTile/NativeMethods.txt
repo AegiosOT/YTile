@@ -43,6 +43,10 @@ SendInput
 SystemParametersInfoW
 ASFW_ANY
 
+// COM (ImmersiveShell cloaking)
+CoCreateInstance
+CoInitializeEx
+
 // DWM
 DwmGetWindowAttribute
 DwmSetWindowAttribute
