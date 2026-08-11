@@ -31,7 +31,7 @@ Early development.
 - [x] Focus border (`DWMWA_BORDER_COLOR`, Win11)
 - [x] Reaper (liveness sweep)
 - [x] Floating layer: auto-float when an app's minimum size exceeds its cell, `ytile float` toggle
-- [ ] Workspaces (cloak-based hiding)
+- [x] Workspaces: 9 per monitor, cloak-based hiding (`IApplicationView::SetCloak`), crash-safe restore
 - [ ] Application quirks table (community `applications.json`)
 - [ ] Monitor reconciliation (hotplug, resume, work-area changes)
 - [ ] Drag-to-swap, resize deltas, monocle
@@ -57,7 +57,9 @@ ytiled --debug-events    # watch the window-event stream with tiling verdicts
 ytile state              # monitors, windows, layout, focus
 ytile focus left         # directional focus
 ytile move right         # swap focused window in a direction
-ytile layout columns     # bsp | columns, per monitor
+ytile workspace 2        # switch the focused monitor's workspace (1-9)
+ytile send 3             # send the focused window to a workspace
+ytile layout columns     # bsp | columns, per active workspace
 ytile float              # toggle floating for the focused window
 ytile pause / resume / retile / stop
 ```
