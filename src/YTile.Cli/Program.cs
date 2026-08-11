@@ -27,7 +27,7 @@ internal static class Program
 
         switch (cmd)
         {
-            case "state" or "pause" or "resume" or "retile" or "version" or "float" or "stop" or "reload":
+            case "state" or "pause" or "resume" or "retile" or "version" or "float" or "stop" or "reload" or "monocle":
                 break;
             case "subscribe":
                 return Subscribe();
@@ -215,6 +215,7 @@ internal static class Program
               send <1-9>                send the focused window to a workspace
               layout <bsp|columns>      set layout on the active workspace
               float                     toggle floating for the focused window
+              monocle                   toggle fullscreen-within-layout for the focused window
               subscribe                 stream state-change notifications (NDJSON)
               reserve <m> <l> <t> <r> <b>  reserve screen edges on a monitor (bars)
               retile                    recompute and apply the layout

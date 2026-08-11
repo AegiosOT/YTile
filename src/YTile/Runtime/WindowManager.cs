@@ -38,6 +38,9 @@ internal sealed class Workspace
     public List<ManagedWindow> Floating { get; } = [];
     public int FocusedIndex { get; set; }
 
+    /// <summary>Non-zero: this tiled window fills the work area, others are hidden.</summary>
+    public nint MonocleHwnd { get; set; }
+
     public ManagedWindow? Focused =>
         FocusedIndex >= 0 && FocusedIndex < Windows.Count ? Windows[FocusedIndex] : null;
 
@@ -393,16 +396,43 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 break;
 
             case WmEventKind.MoveResizeEnd:
+            {
                 _dragHwnd = 0;
-                // v0: any user drag/resize of a TILED window snaps back to the
-                // layout; floating windows move freely.
-                if (_windowLoc.TryGetValue(e.Hwnd, out (int M, int W) loc)
-                    && loc.W == _monitors[loc.M].Active
-                    && !IsFloating(loc, e.Hwnd))
+                if (!_windowLoc.TryGetValue(e.Hwnd, out (int M, int W) loc)
+                    || loc.W != _monitors[loc.M].Active
+                    || IsFloating(loc, e.Hwnd))
                 {
-                    Retile(loc.M);
+                    break; // floating windows move freely
                 }
+
+                // Unchanged size + moved = a drag: swap with the window whose
+                // cell the cursor dropped on. Anything else snaps back.
+                Workspace ws = _monitors[loc.M].ActiveWs;
+                int dragged = ws.Windows.FindIndex(w => w.Hwnd == e.Hwnd);
+                if (dragged >= 0
+                    && ws.MonocleHwnd == 0
+                    && TryGetRect(e.Hwnd, out RectI dropped)
+                    && Math.Abs(dropped.W - ws.Windows[dragged].RequestedW) <= FitTolerance
+                    && Math.Abs(dropped.H - ws.Windows[dragged].RequestedH) <= FitTolerance
+                    && TryGetCursor(out int cx, out int cy))
+                {
+                    int target = ws.Windows.FindIndex(w => w.Hwnd != e.Hwnd
+                        && cx >= w.LastRect.X && cx < w.LastRect.Right
+                        && cy >= w.LastRect.Y && cy < w.LastRect.Bottom);
+                    if (target >= 0)
+                    {
+                        (ws.Windows[dragged], ws.Windows[target]) = (ws.Windows[target], ws.Windows[dragged]);
+                        ws.FocusedIndex = target;
+                        Log($"drag-swap 0x{e.Hwnd:X8} -> slot {target}");
+                        Retile(loc.M);
+                        PublishEvent("move");
+                        break;
+                    }
+                }
+
+                Retile(loc.M);
                 break;
+            }
         }
     }
 
@@ -497,6 +527,9 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         int monitor = MonitorIndexFor(hwnd);
         MonitorCtx mc = _monitors[monitor];
         Workspace ws = mc.ActiveWs;
+        // A new window on a monocled workspace ends the monocle — predictable
+        // over invisible-new-window surprises.
+        ExitMonocle(ws);
         // Adoption preserves enumeration (Z) order; live adds go next to focus.
         int insertAt = adopting ? ws.Windows.Count : Math.Min(ws.FocusedIndex + 1, ws.Windows.Count);
         ws.Windows.Insert(insertAt, new ManagedWindow(hwnd, snapshot.ProcessId, snapshot.ExeName));
@@ -573,6 +606,21 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             _borderHwnd = 0;
         }
 
+        if (ws.MonocleHwnd == hwnd)
+        {
+            ws.MonocleHwnd = 0;
+            if (loc.W == mc.Active)
+            {
+                foreach (ManagedWindow w in ws.Windows)
+                {
+                    if (_selfCloaked.Contains(w.Hwnd))
+                    {
+                        UncloakWin(w.Hwnd);
+                    }
+                }
+            }
+        }
+
         Log($"unmanage 0x{hwnd:X8}{(loc.W == mc.Active ? "" : $" (ws {loc.W + 1})")}");
         // A floating window occupies no cell; hidden workspaces retile on switch.
         if (wasTiled && loc.W == mc.Active)
@@ -600,6 +648,29 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     {
         MonitorCtx mc = _monitors[monitor];
         Workspace ws = mc.ActiveWs;
+
+        if (ws.MonocleHwnd != 0)
+        {
+            ManagedWindow? monocle = ws.Windows.Find(w => w.Hwnd == ws.MonocleHwnd);
+            if (monocle is not null)
+            {
+                RectI cell = mc.EffectiveWorkArea.Shrink(_config.Gap);
+                monocle.LastRect = cell;
+                RectI monoAdjusted = WindowPositioner.Apply(monocle.Hwnd, cell, dryRun);
+                if (!dryRun)
+                {
+                    monocle.RequestedX = monoAdjusted.X;
+                    monocle.RequestedY = monoAdjusted.Y;
+                    monocle.RequestedW = monoAdjusted.W;
+                    monocle.RequestedH = monoAdjusted.H;
+                    monocle.RequestedAtMs = Environment.TickCount64;
+                    monocle.PendingVerify = true;
+                }
+                return;
+            }
+            ws.MonocleHwnd = 0; // window went away — fall through to normal tiling
+        }
+
         RectI[] cells = Layouts.Compute(ws.Layout, mc.EffectiveWorkArea, ws.Windows.Count, _config.Gap);
         for (int i = 0; i < ws.Windows.Count; i++)
         {
@@ -940,6 +1011,49 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
 
     private static unsafe bool IsWindowAlive(nint hwnd) => PInvoke.IsWindow(new HWND(hwnd));
 
+    private static unsafe bool TryGetRect(nint hwnd, out RectI rect)
+    {
+        RECT r = default;
+        if (!PInvoke.GetWindowRect(new HWND(hwnd), &r))
+        {
+            rect = default;
+            return false;
+        }
+        rect = RectI.From(r);
+        return true;
+    }
+
+    private static unsafe bool TryGetCursor(out int x, out int y)
+    {
+        System.Drawing.Point point = default;
+        if (!PInvoke.GetCursorPos(&point))
+        {
+            x = y = 0;
+            return false;
+        }
+        x = point.X;
+        y = point.Y;
+        return true;
+    }
+
+    /// <summary>Ends a monocle, restoring the windows it hid (active ws only).</summary>
+    private void ExitMonocle(Workspace ws)
+    {
+        if (ws.MonocleHwnd == 0)
+        {
+            return;
+        }
+
+        ws.MonocleHwnd = 0;
+        foreach (ManagedWindow w in ws.Windows)
+        {
+            if (_selfCloaked.Contains(w.Hwnd))
+            {
+                UncloakWin(w.Hwnd);
+            }
+        }
+    }
+
     private void CloakWin(nint hwnd)
     {
         if (dryRun)
@@ -1046,6 +1160,9 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         {
             CloakWin(w.Hwnd);
         }
+        // Everything on the outgoing workspace is cloaked now; coming back
+        // resumes normal tiling rather than a stale monocle.
+        from.MonocleHwnd = 0;
 
         _focusedMonitor = monitor;
         nint target = focusTarget != 0
@@ -1205,6 +1322,48 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 }
                 PublishEvent("layout_change");
                 return new CommandReply(true, Message: $"layout {req.Arg} on monitor {_focusedMonitor}");
+            }
+
+            case "monocle":
+            {
+                if (_paused)
+                {
+                    return new CommandReply(false, "paused — resume first");
+                }
+
+                MonitorCtx mc = _monitors[_focusedMonitor];
+                Workspace ws = mc.ActiveWs;
+                if (ws.MonocleHwnd != 0)
+                {
+                    ExitMonocle(ws);
+                    Retile(_focusedMonitor);
+                    PublishEvent("monocle");
+                    return new CommandReply(true, Message: "monocle off");
+                }
+
+                nint foreground = ForegroundHwnd();
+                nint target = foreground != 0
+                    && _windowLoc.TryGetValue(foreground, out (int M, int W) fgLoc)
+                    && fgLoc.M == _focusedMonitor && fgLoc.W == mc.Active
+                    && ws.Windows.Exists(w => w.Hwnd == foreground)
+                        ? foreground
+                        : ws.Focused?.Hwnd ?? 0;
+                if (target == 0 || !ws.Windows.Exists(w => w.Hwnd == target))
+                {
+                    return new CommandReply(false, "no tiled window to monocle");
+                }
+
+                ws.MonocleHwnd = target;
+                Retile(_focusedMonitor);
+                foreach (ManagedWindow w in ws.Windows)
+                {
+                    if (w.Hwnd != target)
+                    {
+                        CloakWin(w.Hwnd);
+                    }
+                }
+                PublishEvent("monocle");
+                return new CommandReply(true, Message: $"monocle 0x{target:X8}");
             }
 
             case "float":
@@ -1440,7 +1599,8 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 }
 
                 workspaces.Add(new WorkspaceDto(
-                    ws.Layout.ToString().ToLowerInvariant(), ws.FocusedIndex, windows, floating));
+                    ws.Layout.ToString().ToLowerInvariant() + (ws.MonocleHwnd != 0 ? "+monocle" : ""),
+                    ws.FocusedIndex, windows, floating));
             }
 
             RectI area = mc.EffectiveWorkArea;

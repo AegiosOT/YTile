@@ -54,6 +54,7 @@ SetWindowPos
 InvalidateRect
 
 // Focus
+GetCursorPos
 SetForegroundWindow
 AllowSetForegroundWindow
 SendInput
