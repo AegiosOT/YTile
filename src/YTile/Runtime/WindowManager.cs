@@ -105,6 +105,10 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     private long _removalGraceStartMs;
     private long _resumeGraceUntilMs;
 
+    // Deferred post-uncloak pokes for Chromium windows: the immediate nudge
+    // can race DWM's cloak-state propagation, so we poke again shortly after.
+    private readonly List<(nint Hwnd, long DueMs)> _pendingNudges = [];
+
     public async Task RunAsync(ChannelReader<WmMessage> reader, CancellationToken ct)
     {
         Bootstrap();
@@ -139,6 +143,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                             ReapDeadWindows();
                             VerifyCellFits();
                             CheckDisplayChange();
+                            ProcessPendingNudges();
                             break;
                         case WmMessage.DisplayChange:
                             _displayChangePendingAtMs = Environment.TickCount64;
@@ -764,6 +769,29 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     private bool IsFloating((int M, int W) loc, nint hwnd)
         => _monitors[loc.M].Workspaces[loc.W].Floating.Exists(w => w.Hwnd == hwnd);
 
+    private void ProcessPendingNudges()
+    {
+        if (_pendingNudges.Count == 0)
+        {
+            return;
+        }
+
+        long now = Environment.TickCount64;
+        for (int i = _pendingNudges.Count - 1; i >= 0; i--)
+        {
+            (nint hwnd, long dueMs) = _pendingNudges[i];
+            if (now < dueMs)
+            {
+                continue;
+            }
+            _pendingNudges.RemoveAt(i);
+            if (IsWindowAlive(hwnd) && !_selfCloaked.Contains(hwnd))
+            {
+                WindowPositioner.Nudge(hwnd);
+            }
+        }
+    }
+
     /// <summary>Runs on reaper ticks: applies a debounced display change.</summary>
     private void CheckDisplayChange()
     {
@@ -941,10 +969,12 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             CloakPersistence.Save(_selfCloaked);
             CloakControl.SetCloak(hwnd, false);
             // Chromium's occlusion tracker can miss the uncloak and leave the
-            // renderer suspended (black surface) — force a recompute.
+            // renderer suspended (black surface) — force a recompute now and
+            // again after DWM's cloak state has settled.
             if (WindowSnapshot.ClassNameOf(hwnd).StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal))
             {
                 WindowPositioner.Nudge(hwnd);
+                _pendingNudges.Add((hwnd, Environment.TickCount64 + 300));
             }
         }
     }
@@ -994,11 +1024,10 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         Workspace to = mc.Workspaces[index];
         mc.Active = index;
 
-        // Position the incoming windows while they are still cloaked, and
-        // uncloak LAST: Chromium suspends its renderer while DWMWA_CLOAKED is
-        // set, and the uncloak is the visibility flip that wakes it — windows
-        // repositioned after uncloaking can come back as a stale black surface.
-        Retile(monitor);
+        // komorebi's shipped workspace order: uncloak first, THEN position.
+        // The positioning pass (FRAMECHANGED + NOCOPYBITS) is what forces a
+        // real repaint after the uncloak — Chromium renderers stay suspended
+        // otherwise, showing a stale black surface.
         foreach (ManagedWindow w in to.Windows)
         {
             UncloakWin(w.Hwnd);
@@ -1007,6 +1036,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         {
             UncloakWin(w.Hwnd);
         }
+        Retile(monitor);
 
         foreach (ManagedWindow w in from.Windows)
         {

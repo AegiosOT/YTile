@@ -14,10 +14,17 @@ namespace YTile.Win32;
 /// </summary>
 internal static unsafe class WindowPositioner
 {
+    // FRAMECHANGED forces WM_WINDOWPOSCHANGED even when the rect is unchanged
+    // (a same-rect retile is otherwise a silent no-op — Chromium's occlusion
+    // tracker never recomputes and a post-uncloak renderer stays suspended);
+    // NOCOPYBITS forces a real repaint instead of blitting the stale surface.
     private const SET_WINDOW_POS_FLAGS Flags =
         SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE |
         SET_WINDOW_POS_FLAGS.SWP_NOZORDER |
-        SET_WINDOW_POS_FLAGS.SWP_ASYNCWINDOWPOS;
+        SET_WINDOW_POS_FLAGS.SWP_ASYNCWINDOWPOS |
+        SET_WINDOW_POS_FLAGS.SWP_FRAMECHANGED |
+        SET_WINDOW_POS_FLAGS.SWP_NOCOPYBITS |
+        SET_WINDOW_POS_FLAGS.SWP_NOSENDCHANGING;
 
     /// <summary>Returns the adjusted rect actually requested from the OS, so the
     /// caller can later verify whether the window honored it.</summary>
