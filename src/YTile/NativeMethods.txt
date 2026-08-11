@@ -55,6 +55,7 @@ InvalidateRect
 
 // Focus
 GetCursorPos
+GetShellWindow
 SetForegroundWindow
 AllowSetForegroundWindow
 SendInput

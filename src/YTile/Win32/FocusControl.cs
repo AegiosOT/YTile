@@ -36,6 +36,20 @@ internal static unsafe class FocusControl
         PInvoke.SetForegroundWindow(new HWND(hwndRaw));
     }
 
+    /// <summary>
+    /// Parks foreground on the desktop shell window — used when a workspace
+    /// switch leaves nothing to focus, so the OS can't return foreground to a
+    /// cloaked window.
+    /// </summary>
+    public static void FocusDesktop()
+    {
+        HWND shell = PInvoke.GetShellWindow();
+        if (!shell.IsNull)
+        {
+            Focus((nint)shell.Value);
+        }
+    }
+
     /// <summary>Win11 native focus border; silently a no-op on Win10.</summary>
     public static void SetBorder(nint hwndRaw, uint? colorref)
     {

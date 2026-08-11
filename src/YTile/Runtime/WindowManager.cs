@@ -112,6 +112,12 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     // can race DWM's cloak-state propagation, so we poke again shortly after.
     private readonly List<(nint Hwnd, long DueMs)> _pendingNudges = [];
 
+    // After we cloak windows, the OS may hand foreground back to one of them
+    // (e.g. when a keybind's transient console closes). Within this window,
+    // foreground on a self-cloaked window is churn — not the user asking to
+    // follow it to its hidden workspace.
+    private long _cloakChurnUntilMs;
+
     public async Task RunAsync(ChannelReader<WmMessage> reader, CancellationToken ct)
     {
         Bootstrap();
@@ -458,6 +464,13 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         MonitorCtx mc = _monitors[loc.M];
         if (loc.W != mc.Active)
         {
+            // Foreground bouncing back to a window we just cloaked is OS churn
+            // (transient consoles from keybinds, etc.) — never follow it.
+            if (_selfCloaked.Contains(hwnd) && Environment.TickCount64 < _cloakChurnUntilMs)
+            {
+                return;
+            }
+
             // A window on a hidden workspace took foreground (notification
             // click, app self-activation) — follow it there.
             Log($"foreground on hidden workspace — switching monitor {loc.M} to workspace {loc.W + 1}");
@@ -1163,6 +1176,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         // Everything on the outgoing workspace is cloaked now; coming back
         // resumes normal tiling rather than a stale monocle.
         from.MonocleHwnd = 0;
+        _cloakChurnUntilMs = Environment.TickCount64 + 1500;
 
         _focusedMonitor = monitor;
         nint target = focusTarget != 0
@@ -1182,6 +1196,12 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         else
         {
             ClearBorder();
+            // Park foreground on the desktop so the OS can't hand it back to
+            // a window we just cloaked.
+            if (!dryRun)
+            {
+                FocusControl.FocusDesktop();
+            }
         }
 
         Log($"monitor {monitor} -> workspace {index + 1}");
@@ -1507,12 +1527,17 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             _borderHwnd = 0;
         }
         CloakWin(target);
+        _cloakChurnUntilMs = Environment.TickCount64 + 1500;
         Retile(_focusedMonitor);
 
         nint next = ws.Focused?.Hwnd ?? 0;
         if (next != 0 && !dryRun)
         {
             FocusControl.Focus(next);
+        }
+        else if (!dryRun)
+        {
+            FocusControl.FocusDesktop();
         }
 
         Log($"send 0x{target:X8} -> workspace {number}");
