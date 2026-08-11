@@ -147,13 +147,26 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         CloakControl.Init();
 
         // Crash insurance: restore anything a dead ytiled left cloaked.
+        List<nint>? unrecovered = null;
         foreach (nint leftover in CloakPersistence.LoadAndDelete())
         {
-            if (IsWindowAlive(leftover))
+            if (!IsWindowAlive(leftover))
             {
-                CloakControl.SetCloak(leftover, false);
+                continue;
+            }
+            if (CloakControl.SetCloak(leftover, false))
+            {
                 Log($"restored 0x{leftover:X8} cloaked by a previous instance");
             }
+            else
+            {
+                (unrecovered ??= []).Add(leftover);
+                Log($"FAILED to restore 0x{leftover:X8} — kept in the recovery file");
+            }
+        }
+        if (unrecovered is not null)
+        {
+            CloakPersistence.Save(unrecovered);
         }
 
         foreach (MonitorDesc desc in MonitorProbe.Enumerate())
@@ -691,6 +704,12 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         {
             CloakPersistence.Save(_selfCloaked);
             CloakControl.SetCloak(hwnd, false);
+            // Chromium's occlusion tracker can miss the uncloak and leave the
+            // renderer suspended (black surface) — force a recompute.
+            if (WindowSnapshot.ClassNameOf(hwnd).StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal))
+            {
+                WindowPositioner.Nudge(hwnd);
+            }
         }
     }
 
@@ -701,13 +720,29 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             return;
         }
 
+        List<nint>? failed = null;
         foreach (nint hwnd in _selfCloaked)
         {
-            CloakControl.SetCloak(hwnd, false);
+            if (!IsWindowAlive(hwnd))
+            {
+                continue;
+            }
+            // One retry — the cross-process shell call can fail transiently.
+            if (!CloakControl.SetCloak(hwnd, false) && !CloakControl.SetCloak(hwnd, false))
+            {
+                (failed ??= []).Add(hwnd);
+                Log($"FAILED to restore 0x{hwnd:X8} — kept in the recovery file");
+            }
         }
+
         _selfCloaked.Clear();
+        foreach (nint hwnd in failed ?? [])
+        {
+            _selfCloaked.Add(hwnd);
+        }
+        // Failed windows stay on disk so the next start can rescue them.
         CloakPersistence.Save(_selfCloaked);
-        Log("restored all hidden windows");
+        Log(failed is null ? "restored all hidden windows" : $"restored hidden windows, {failed.Count} FAILED");
     }
 
     /// <summary>Uncloaks the target workspace, retiles, then cloaks the old one.</summary>
@@ -723,7 +758,11 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         Workspace to = mc.Workspaces[index];
         mc.Active = index;
 
-        // Show the incoming workspace first — less blank-screen time.
+        // Position the incoming windows while they are still cloaked, and
+        // uncloak LAST: Chromium suspends its renderer while DWMWA_CLOAKED is
+        // set, and the uncloak is the visibility flip that wakes it — windows
+        // repositioned after uncloaking can come back as a stale black surface.
+        Retile(monitor);
         foreach (ManagedWindow w in to.Windows)
         {
             UncloakWin(w.Hwnd);
@@ -732,7 +771,6 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         {
             UncloakWin(w.Hwnd);
         }
-        Retile(monitor);
 
         foreach (ManagedWindow w in from.Windows)
         {

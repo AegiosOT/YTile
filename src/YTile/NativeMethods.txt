@@ -35,6 +35,7 @@ MONITORINFOF_PRIMARY
 // Adoption + tiling
 EnumWindows
 SetWindowPos
+InvalidateRect
 
 // Focus
 SetForegroundWindow

@@ -26,6 +26,14 @@ internal readonly struct WindowSnapshot
     public int Width { get; init; }
     public int Height { get; init; }
 
+    /// <summary>Cheap class-only probe (no process handle round-trip).</summary>
+    public static unsafe string ClassNameOf(nint hwndRaw)
+    {
+        Span<char> buffer = stackalloc char[256];
+        int len = PInvoke.GetClassName(new HWND(hwndRaw), buffer);
+        return new string(buffer[..Math.Max(len, 0)]);
+    }
+
     public static unsafe WindowSnapshot Capture(nint hwndRaw)
     {
         var hwnd = new HWND(hwndRaw);

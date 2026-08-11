@@ -1,4 +1,5 @@
 using Windows.Win32;
+using Windows.Win32.Graphics.Dwm;
 using Windows.Win32.System.Com;
 using Windows.Win32.UI.WindowsAndMessaging;
 using Windows.Win32.Foundation;
@@ -72,16 +73,29 @@ internal static unsafe class CloakControl
         Available = true;
     }
 
-    /// <summary>Returns false only when both cloaking and the fallback failed.</summary>
+    /// <summary>
+    /// Returns false when the window did not reach the requested state. An
+    /// uncloak is VERIFIED against DWMWA_CLOAKED: ShowWindow cannot clear a
+    /// shell cloak, so a fallback "success" after a failed COM uncloak would
+    /// otherwise strand the window invisible while reporting success.
+    /// </summary>
     public static bool SetCloak(nint hwnd, bool hide)
     {
-        if (Available && TryCloak(hwnd, hide))
+        bool applied = Available && TryCloak(hwnd, hide);
+        if (!applied)
         {
-            return true;
+            // Fallback (also used if a single view lookup fails): plain hide/show.
+            applied = PInvoke.ShowWindow(new HWND(hwnd), hide ? SHOW_WINDOW_CMD.SW_HIDE : SHOW_WINDOW_CMD.SW_SHOWNOACTIVATE);
         }
 
-        // Fallback (also used if a single view lookup fails): plain hide/show.
-        return PInvoke.ShowWindow(new HWND(hwnd), hide ? SHOW_WINDOW_CMD.SW_HIDE : SHOW_WINDOW_CMD.SW_SHOWNOACTIVATE);
+        return hide ? applied : applied && IsUncloaked(hwnd);
+    }
+
+    private static bool IsUncloaked(nint hwnd)
+    {
+        uint cloaked = 0;
+        PInvoke.DwmGetWindowAttribute(new HWND(hwnd), DWMWINDOWATTRIBUTE.DWMWA_CLOAKED, &cloaked, sizeof(uint));
+        return cloaked == 0;
     }
 
     private static bool TryCloak(nint hwnd, bool hide)

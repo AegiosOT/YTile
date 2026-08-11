@@ -48,4 +48,21 @@ internal static unsafe class WindowPositioner
         PInvoke.SetWindowPos(hwnd, HWND.Null, adjusted.X, adjusted.Y, adjusted.W, adjusted.H, Flags);
         return adjusted;
     }
+
+    /// <summary>
+    /// No-op position change + invalidate: fires WM_WINDOWPOSCHANGED so
+    /// occlusion trackers (Chromium's in particular) re-evaluate the window
+    /// and wake a suspended renderer after an uncloak.
+    /// </summary>
+    public static void Nudge(nint hwndRaw)
+    {
+        var hwnd = new HWND(hwndRaw);
+        PInvoke.SetWindowPos(hwnd, HWND.Null, 0, 0, 0, 0,
+            SET_WINDOW_POS_FLAGS.SWP_FRAMECHANGED |
+            SET_WINDOW_POS_FLAGS.SWP_NOMOVE |
+            SET_WINDOW_POS_FLAGS.SWP_NOSIZE |
+            SET_WINDOW_POS_FLAGS.SWP_NOZORDER |
+            SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE);
+        PInvoke.InvalidateRect(hwnd, (RECT*)null, false);
+    }
 }
