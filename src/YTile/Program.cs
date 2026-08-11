@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.Channels;
 using Windows.Win32;
 using Windows.Win32.UI.HiDpi;
@@ -18,17 +19,10 @@ internal static class Program
             return 0;
         }
 
-        if (!args.Contains("--debug-events"))
-        {
-            Console.WriteLine($"ytiled {Version} — window management is not implemented yet.");
-            Console.WriteLine("Run 'ytiled --debug-events' to watch the window-event stream.");
-            return 2;
-        }
-
         // Physical-pixel window rects on mixed-DPI setups.
         PInvoke.SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-        var channel = Channel.CreateBounded<RawWinEvent>(new BoundedChannelOptions(256)
+        var raw = Channel.CreateBounded<RawWinEvent>(new BoundedChannelOptions(256)
         {
             SingleReader = true,
             SingleWriter = true,
@@ -43,9 +37,62 @@ internal static class Program
             cts.Cancel();
         };
 
-        Console.WriteLine($"ytiled {Version} — event debug mode, Ctrl+C to exit.");
-        EventListener.Start(channel.Writer);
-        await DebugEventDumper.RunAsync(channel.Reader, cts.Token);
+        if (args.Contains("--debug-events"))
+        {
+            Console.WriteLine($"ytiled {Version} — event debug mode, Ctrl+C to exit.");
+            EventListener.Start(raw.Writer);
+            await DebugEventDumper.RunAsync(raw.Reader, cts.Token);
+            return 0;
+        }
+
+        bool dryRun = args.Contains("--dry-run");
+        bool force = args.Contains("--force");
+
+        using var instanceLock = new Mutex(initiallyOwned: true, @"Local\ytiled-instance", out bool firstInstance);
+        if (!firstInstance)
+        {
+            Console.Error.WriteLine("ytiled: another instance is already running.");
+            return 1;
+        }
+
+        bool startPaused = false;
+        if (!force && Process.GetProcessesByName("komorebi").Length > 0)
+        {
+            startPaused = true;
+            Console.WriteLine("komorebi.exe is running — starting PAUSED so two tiling managers don't fight.");
+            Console.WriteLine("Stop komorebi and run 'ytile resume', or restart ytiled with --force.");
+        }
+
+        // Session-global focus policy: only when actually managing for real.
+        if (!dryRun && !startPaused)
+        {
+            FocusControl.Init();
+        }
+
+        var wm = Channel.CreateUnbounded<WmMessage>(new UnboundedChannelOptions { SingleReader = true });
+
+        EventListener.Start(raw.Writer);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (RawWinEvent e in raw.Reader.ReadAllAsync(cts.Token))
+                {
+                    wm.Writer.TryWrite(new WmMessage.Os(e));
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }, CancellationToken.None);
+
+        var ipc = new IpcServer(wm.Writer);
+        _ = Task.Run(() => ipc.RunAsync(cts.Token), CancellationToken.None);
+        _ = Task.Run(() => Reaper.RunAsync(wm.Writer, cts.Token), CancellationToken.None);
+
+        Console.WriteLine($"ytiled {Version}{(dryRun ? " [dry-run]" : "")} — Ctrl+C to exit.");
+        var manager = new WindowManager(Version, dryRun, startPaused, gap: 8);
+        await manager.RunAsync(wm.Reader, cts.Token);
         return 0;
     }
 }

@@ -24,14 +24,16 @@ See [docs/komorebi-architecture-digest.md](docs/komorebi-architecture-digest.md)
 Early development.
 
 - [x] Event spine: narrow WinEvent hooks, message pump, `--debug-events` dump mode
-- [ ] Eligibility + window tracking (adoption pass, `known_hwnds`)
-- [ ] Layouts: BSP, Columns
-- [ ] Focus + directional movement
+- [x] Eligibility + window tracking (adoption pass, single-actor state)
+- [x] Layouts: BSP (dwindle), Columns
+- [x] Focus + directional movement (`ytile focus/move left|right|up|down`)
+- [x] IPC (named-pipe NDJSON) + `ytile` CLI verbs
+- [x] Focus border (`DWMWA_BORDER_COLOR`, Win11)
+- [x] Reaper (liveness sweep)
 - [ ] Workspaces (cloak-based hiding)
-- [ ] Reaper + application quirks table
-- [ ] IPC (NDJSON) + `ytile` CLI verbs
-- [ ] Focus border (`DWMWA_BORDER_COLOR`)
-- [ ] Monitor reconciliation
+- [ ] Application quirks table (community `applications.json`)
+- [ ] Monitor reconciliation (hotplug, resume, work-area changes)
+- [ ] Drag-to-swap, resize deltas, monocle
 
 ## Building
 
@@ -46,7 +48,16 @@ dotnet publish src/YTile.Cli -r win-x64 -c Release    # NativeAOT CLI     -> yti
 ## Running
 
 ```
+ytiled                   # start the daemon (auto-pauses if komorebi.exe is running)
+ytiled --dry-run         # log every SetWindowPos/focus instead of applying it
+ytiled --force           # manage even while komorebi is running (they will fight)
 ytiled --debug-events    # watch the window-event stream with tiling verdicts
+
+ytile state              # monitors, windows, layout, focus
+ytile focus left         # directional focus
+ytile move right         # swap focused window in a direction
+ytile layout columns     # bsp | columns, per monitor
+ytile pause / resume / retile
 ```
 
 ## License

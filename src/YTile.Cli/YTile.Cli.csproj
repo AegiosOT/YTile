@@ -9,4 +9,8 @@
     <OptimizationPreference>Speed</OptimizationPreference>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\YTile.Protocol\YTile.Protocol.csproj" />
+  </ItemGroup>
+
 </Project>

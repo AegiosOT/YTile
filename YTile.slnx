@@ -2,5 +2,9 @@
   <Folder Name="/src/">
     <Project Path="src/YTile/YTile.csproj" />
     <Project Path="src/YTile.Cli/YTile.Cli.csproj" />
+    <Project Path="src/YTile.Protocol/YTile.Protocol.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/YTile.Tests/YTile.Tests.csproj" />
   </Folder>
 </Solution>

@@ -17,6 +17,7 @@ internal readonly struct WindowSnapshot
     public uint ProcessId { get; init; }
     public bool Visible { get; init; }
     public bool Iconic { get; init; }
+    public bool Zoomed { get; init; }
     public bool Cloaked { get; init; }
     public WINDOW_STYLE Style { get; init; }
     public WINDOW_EX_STYLE ExStyle { get; init; }
@@ -80,6 +81,7 @@ internal readonly struct WindowSnapshot
             ProcessId = pid,
             Visible = PInvoke.IsWindowVisible(hwnd),
             Iconic = PInvoke.IsIconic(hwnd),
+            Zoomed = PInvoke.IsZoomed(hwnd),
             Cloaked = cloaked != 0,
             Style = style,
             ExStyle = exStyle,

@@ -17,14 +17,36 @@ GetWindowLongPtrW
 IsWindow
 IsWindowVisible
 IsIconic
+IsZoomed
+ShowWindow
 
 // Process identity
 OpenProcess
 CloseHandle
 QueryFullProcessImageNameW
 
+// Monitors
+EnumDisplayMonitors
+GetMonitorInfoW
+MonitorFromWindow
+MONITORINFOEXW
+MONITORINFOF_PRIMARY
+
+// Adoption + tiling
+EnumWindows
+SetWindowPos
+
+// Focus
+SetForegroundWindow
+AllowSetForegroundWindow
+SendInput
+SystemParametersInfoW
+ASFW_ANY
+
 // DWM
 DwmGetWindowAttribute
+DwmSetWindowAttribute
+DWMWA_COLOR_DEFAULT
 
 // DPI
 SetProcessDpiAwarenessContext

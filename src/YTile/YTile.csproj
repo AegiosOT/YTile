@@ -13,6 +13,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Windows.CsWin32" PrivateAssets="all" />
+    <ProjectReference Include="..\YTile.Protocol\YTile.Protocol.csproj" />
+    <InternalsVisibleTo Include="YTile.Tests" />
   </ItemGroup>
 
 </Project>
