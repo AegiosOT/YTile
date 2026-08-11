@@ -14,12 +14,26 @@ internal sealed class ManagedWindow(nint hwnd, uint pid, string exe)
     public uint Pid { get; } = pid;
     public string Exe { get; } = exe;
     public RectI LastRect { get; set; }
+
+    // Rect we last asked the OS for, so the reaper can detect windows whose
+    // WM_GETMINMAXINFO minimum silently clamped the resize above the cell.
+    public int RequestedX { get; set; }
+    public int RequestedY { get; set; }
+    public int RequestedW { get; set; }
+    public int RequestedH { get; set; }
+    public long RequestedAtMs { get; set; }
+    public bool PendingVerify { get; set; }
+
+    // Set when the user explicitly re-tiled this window via 'ytile float':
+    // respect that choice even if the window overflows its cell.
+    public bool NoAutoFloat { get; set; }
 }
 
 internal sealed class Workspace
 {
     public LayoutKind Layout { get; set; } = LayoutKind.Bsp;
     public List<ManagedWindow> Windows { get; } = [];
+    public List<ManagedWindow> Floating { get; } = [];
     public int FocusedIndex { get; set; }
 
     public ManagedWindow? Focused =>
@@ -38,7 +52,11 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     private readonly List<(MonitorDesc Desc, Workspace Ws)> _monitors = [];
     private readonly Dictionary<nint, int> _windowMonitor = [];
     private readonly uint _ownPid = (uint)Environment.ProcessId;
+    // A clamped resize larger than this margin means the window refused the cell.
+    private const int FitTolerance = 8;
+
     private bool _paused = startPaused;
+    private bool _stopRequested;
     private int _focusedMonitor;
     private nint _borderHwnd;
     private nint _dragHwnd;
@@ -75,12 +93,18 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                             break;
                         case WmMessage.ReaperTick:
                             ReapDeadWindows();
+                            VerifyCellFits();
                             break;
                     }
                 }
                 catch (Exception ex)
                 {
                     Log($"error processing {msg.GetType().Name}: {ex.Message}");
+                }
+
+                if (_stopRequested)
+                {
+                    break;
                 }
             }
         }
@@ -176,6 +200,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             foreach ((_, Workspace ws) in _monitors)
             {
                 ws.Windows.Clear();
+                ws.Floating.Clear();
                 ws.FocusedIndex = 0;
             }
         }
@@ -224,8 +249,9 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
 
             case WmEventKind.MoveResizeEnd:
                 _dragHwnd = 0;
-                // v0: any user drag/resize snaps back to the layout.
-                if (_windowMonitor.TryGetValue(e.Hwnd, out int monitor))
+                // v0: any user drag/resize of a TILED window snaps back to the
+                // layout; floating windows move freely.
+                if (_windowMonitor.TryGetValue(e.Hwnd, out int monitor) && !IsFloating(monitor, e.Hwnd))
                 {
                     Retile(monitor);
                 }
@@ -257,6 +283,11 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         if (idx >= 0)
         {
             ws.FocusedIndex = idx;
+            _focusedMonitor = monitor;
+            SetBorder(hwnd);
+        }
+        else if (IsFloating(monitor, hwnd))
+        {
             _focusedMonitor = monitor;
             SetBorder(hwnd);
         }
@@ -327,6 +358,31 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 ws.FocusedIndex = Math.Max(0, ws.Windows.Count - 1);
             }
         }
+        else
+        {
+            int floatIdx = ws.Floating.FindIndex(w => w.Hwnd == hwnd);
+            if (floatIdx >= 0)
+            {
+                ws.Floating.RemoveAt(floatIdx);
+                // A floating window occupies no cell — no retile needed.
+                if (_dragHwnd == hwnd)
+                {
+                    _dragHwnd = 0;
+                }
+                if (_borderHwnd == hwnd)
+                {
+                    // Same as the tiled path: hidden/minimized windows still
+                    // exist and would show a stale border when they come back.
+                    if (!dryRun && PInvoke.IsWindow(new HWND(hwnd)))
+                    {
+                        FocusControl.SetBorder(hwnd, null);
+                    }
+                    _borderHwnd = 0;
+                }
+                Log($"unmanage 0x{hwnd:X8} (floating)");
+                return;
+            }
+        }
 
         if (_dragHwnd == hwnd)
         {
@@ -368,12 +424,22 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         RectI[] cells = Layouts.Compute(ws.Layout, desc.WorkArea, ws.Windows.Count, gap);
         for (int i = 0; i < ws.Windows.Count; i++)
         {
-            ws.Windows[i].LastRect = cells[i];
-            if (ws.Windows[i].Hwnd == _dragHwnd)
+            ManagedWindow w = ws.Windows[i];
+            w.LastRect = cells[i];
+            if (w.Hwnd == _dragHwnd)
             {
                 continue; // mid-drag; MoveResizeEnd will snap it back
             }
-            WindowPositioner.Apply(ws.Windows[i].Hwnd, cells[i], dryRun);
+            RectI adjusted = WindowPositioner.Apply(w.Hwnd, cells[i], dryRun);
+            if (!dryRun)
+            {
+                w.RequestedX = adjusted.X;
+                w.RequestedY = adjusted.Y;
+                w.RequestedW = adjusted.W;
+                w.RequestedH = adjusted.H;
+                w.RequestedAtMs = Environment.TickCount64;
+                w.PendingVerify = true;
+            }
         }
     }
 
@@ -415,12 +481,152 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         }
     }
 
+    /// <summary>
+    /// Some apps clamp resizes to a minimum size (WM_GETMINMAXINFO), silently
+    /// ending up bigger than their cell and overlapping neighbors. Detect that
+    /// after the async SetWindowPos settles and float the window instead.
+    /// </summary>
+    private unsafe void VerifyCellFits()
+    {
+        if (_paused || dryRun)
+        {
+            return;
+        }
+
+        long now = Environment.TickCount64;
+        List<(nint Hwnd, int Monitor)>? overflow = null;
+        for (int m = 0; m < _monitors.Count; m++)
+        {
+            foreach (ManagedWindow w in _monitors[m].Ws.Windows)
+            {
+                if (!w.PendingVerify || w.NoAutoFloat || now - w.RequestedAtMs < 200 || w.Hwnd == _dragHwnd)
+                {
+                    continue;
+                }
+
+                RECT r = default;
+                if (!PInvoke.GetWindowRect(new HWND(w.Hwnd), &r))
+                {
+                    w.PendingVerify = false;
+                    continue;
+                }
+
+                bool oversize = r.right - r.left > w.RequestedW + FitTolerance
+                             || r.bottom - r.top > w.RequestedH + FitTolerance;
+                if (!oversize)
+                {
+                    w.PendingVerify = false;
+                    continue;
+                }
+
+                // Only a window that MOVED to its cell but refused the size has
+                // provably clamped (WM_GETMINMAXINFO doesn't touch position).
+                // An untouched rect just means SWP_ASYNCWINDOWPOS hasn't landed
+                // yet — retry until a deadline rather than float a healthy window.
+                bool positioned = Math.Abs(r.left - w.RequestedX) <= FitTolerance
+                               && Math.Abs(r.top - w.RequestedY) <= FitTolerance;
+                if (positioned)
+                {
+                    w.PendingVerify = false;
+                    (overflow ??= []).Add((w.Hwnd, m));
+                }
+                else if (now - w.RequestedAtMs > 2000)
+                {
+                    w.PendingVerify = false;
+                }
+            }
+        }
+
+        if (overflow is null)
+        {
+            return;
+        }
+
+        foreach ((nint hwnd, int monitor) in overflow)
+        {
+            FloatWindow(hwnd, monitor, "minimum size exceeds its cell");
+        }
+    }
+
+    private void FloatWindow(nint hwnd, int monitor, string reason)
+    {
+        (_, Workspace ws) = _monitors[monitor];
+        int idx = ws.Windows.FindIndex(w => w.Hwnd == hwnd);
+        if (idx < 0)
+        {
+            return;
+        }
+
+        ManagedWindow w = ws.Windows[idx];
+        ws.Windows.RemoveAt(idx);
+        if (idx < ws.FocusedIndex)
+        {
+            ws.FocusedIndex--;
+        }
+        else if (ws.FocusedIndex >= ws.Windows.Count)
+        {
+            ws.FocusedIndex = Math.Max(0, ws.Windows.Count - 1);
+        }
+
+        w.PendingVerify = false;
+        w.NoAutoFloat = false; // floating again clears any "keep tiled" pin
+        ws.Floating.Add(w);
+        Log($"float 0x{hwnd:X8} {w.Exe} — {reason}");
+        Retile(monitor);
+    }
+
+    private bool IsFloating(int monitor, nint hwnd)
+        => _monitors[monitor].Ws.Floating.Exists(w => w.Hwnd == hwnd);
+
+    private static unsafe nint ForegroundHwnd() => (nint)PInvoke.GetForegroundWindow().Value;
+
     private CommandReply HandleCommand(CommandRequest req)
     {
         switch (req.Cmd)
         {
             case "version":
                 return new CommandReply(true, Message: version);
+
+            case "stop":
+                _stopRequested = true;
+                ClearBorder();
+                Log("stop requested via CLI");
+                return new CommandReply(true, Message: "stopping");
+
+            case "float":
+            {
+                if (_paused)
+                {
+                    return new CommandReply(false, "paused — resume first");
+                }
+
+                nint foreground = ForegroundHwnd();
+                nint target = foreground != 0 && _windowMonitor.ContainsKey(foreground)
+                    ? foreground
+                    : _monitors[_focusedMonitor].Ws.Focused?.Hwnd ?? 0;
+                if (target == 0 || !_windowMonitor.TryGetValue(target, out int m))
+                {
+                    return new CommandReply(false, "no managed window to float");
+                }
+
+                Workspace ws = _monitors[m].Ws;
+                int floatIdx = ws.Floating.FindIndex(w => w.Hwnd == target);
+                if (floatIdx >= 0)
+                {
+                    ManagedWindow w = ws.Floating[floatIdx];
+                    ws.Floating.RemoveAt(floatIdx);
+                    // The user insists on tiling — don't auto-float it again
+                    // even if it overflows its cell.
+                    w.NoAutoFloat = true;
+                    int insertAt = Math.Min(ws.FocusedIndex + 1, ws.Windows.Count);
+                    ws.Windows.Insert(insertAt, w);
+                    Retile(m);
+                    return new CommandReply(true, Message: $"tiled 0x{target:X8}");
+                }
+
+                FloatWindow(target, m, "user request");
+                return new CommandReply(true, Message: $"floating 0x{target:X8}");
+            }
 
             case "state":
                 return new CommandReply(true, State: BuildState());
@@ -578,11 +784,24 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                     new RectDto(w.LastRect.X, w.LastRect.Y, w.LastRect.W, w.LastRect.H)));
             }
 
+            var floating = new List<WindowDto>(ws.Floating.Count);
+            foreach (ManagedWindow w in ws.Floating)
+            {
+                // Floating windows keep their own geometry — report the real one.
+                var snapshot = WindowSnapshot.Capture(w.Hwnd);
+                floating.Add(new WindowDto(
+                    w.Hwnd,
+                    w.Pid,
+                    w.Exe,
+                    snapshot.IsAlive ? snapshot.Title : "(gone)",
+                    new RectDto(snapshot.X, snapshot.Y, snapshot.Width, snapshot.Height)));
+            }
+
             monitors.Add(new MonitorDto(
                 desc.Device,
                 desc.Primary,
                 new RectDto(desc.WorkArea.X, desc.WorkArea.Y, desc.WorkArea.W, desc.WorkArea.H),
-                new WorkspaceDto(ws.Layout.ToString().ToLowerInvariant(), ws.FocusedIndex, windows)));
+                new WorkspaceDto(ws.Layout.ToString().ToLowerInvariant(), ws.FocusedIndex, windows, floating)));
         }
 
         return new StateDto(version, _paused, dryRun, monitors);

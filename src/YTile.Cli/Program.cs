@@ -27,7 +27,7 @@ internal static class Program
 
         switch (cmd)
         {
-            case "state" or "pause" or "resume" or "retile" or "version":
+            case "state" or "pause" or "resume" or "retile" or "version" or "float" or "stop":
                 break;
             case "layout" or "focus" or "move" when arg is not null:
                 break;
@@ -129,6 +129,13 @@ internal static class Program
                 Console.WriteLine(
                     $"  {marker} {i} 0x{w.Hwnd:X8} {w.Exe,-20} {w.Rect.W}x{w.Rect.H}@{w.Rect.X},{w.Rect.Y}  \"{w.Title}\"");
             }
+
+            // Null when talking to a daemon older than the floating layer.
+            foreach (WindowDto w in ws.Floating ?? [])
+            {
+                Console.WriteLine(
+                    $"  ~   0x{w.Hwnd:X8} {w.Exe,-20} {w.Rect.W}x{w.Rect.H}@{w.Rect.X},{w.Rect.Y}  \"{w.Title}\" (floating)");
+            }
         }
     }
 
@@ -144,9 +151,11 @@ internal static class Program
               focus <left|right|up|down>   focus the window in that direction
               move  <left|right|up|down>   swap focused window in that direction
               layout <bsp|columns>      set layout on the focused monitor
+              float                     toggle floating for the focused window
               retile                    recompute and apply the layout
               pause                     stop reacting to window events
               resume                    resync from the OS and start tiling
+              stop                      shut the daemon down
               version                   daemon version
             """);
     }

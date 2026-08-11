@@ -30,6 +30,7 @@ Early development.
 - [x] IPC (named-pipe NDJSON) + `ytile` CLI verbs
 - [x] Focus border (`DWMWA_BORDER_COLOR`, Win11)
 - [x] Reaper (liveness sweep)
+- [x] Floating layer: auto-float when an app's minimum size exceeds its cell, `ytile float` toggle
 - [ ] Workspaces (cloak-based hiding)
 - [ ] Application quirks table (community `applications.json`)
 - [ ] Monitor reconciliation (hotplug, resume, work-area changes)
@@ -57,8 +58,12 @@ ytile state              # monitors, windows, layout, focus
 ytile focus left         # directional focus
 ytile move right         # swap focused window in a direction
 ytile layout columns     # bsp | columns, per monitor
-ytile pause / resume / retile
+ytile float              # toggle floating for the focused window
+ytile pause / resume / retile / stop
 ```
+
+Windows that refuse to shrink to their cell (launchers like Battle.net enforce a
+minimum size) are detected automatically and float instead of overlapping the layout.
 
 ## License
 

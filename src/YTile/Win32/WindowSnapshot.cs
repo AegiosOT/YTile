@@ -21,6 +21,8 @@ internal readonly struct WindowSnapshot
     public bool Cloaked { get; init; }
     public WINDOW_STYLE Style { get; init; }
     public WINDOW_EX_STYLE ExStyle { get; init; }
+    public int X { get; init; }
+    public int Y { get; init; }
     public int Width { get; init; }
     public int Height { get; init; }
 
@@ -85,6 +87,8 @@ internal readonly struct WindowSnapshot
             Cloaked = cloaked != 0,
             Style = style,
             ExStyle = exStyle,
+            X = rect.left,
+            Y = rect.top,
             Width = rect.right - rect.left,
             Height = rect.bottom - rect.top,
         };

@@ -19,7 +19,9 @@ internal static unsafe class WindowPositioner
         SET_WINDOW_POS_FLAGS.SWP_NOZORDER |
         SET_WINDOW_POS_FLAGS.SWP_ASYNCWINDOWPOS;
 
-    public static void Apply(nint hwndRaw, RectI cell, bool dryRun)
+    /// <summary>Returns the adjusted rect actually requested from the OS, so the
+    /// caller can later verify whether the window honored it.</summary>
+    public static RectI Apply(nint hwndRaw, RectI cell, bool dryRun)
     {
         var hwnd = new HWND(hwndRaw);
 
@@ -35,17 +37,15 @@ internal static unsafe class WindowPositioner
         int right = haveFrame ? window.right - frame.right : 0;
         int bottom = haveFrame ? window.bottom - frame.bottom : 0;
 
-        int x = cell.X - left;
-        int y = cell.Y - top;
-        int w = cell.W + left + right;
-        int h = cell.H + top + bottom;
+        var adjusted = new RectI(cell.X - left, cell.Y - top, cell.W + left + right, cell.H + top + bottom);
 
         if (dryRun)
         {
-            Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} DRYRUN SetWindowPos hwnd=0x{hwndRaw:X8} -> {cell} (adjusted {w}x{h}@{x},{y})");
-            return;
+            Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} DRYRUN SetWindowPos hwnd=0x{hwndRaw:X8} -> {cell} (adjusted {adjusted})");
+            return adjusted;
         }
 
-        PInvoke.SetWindowPos(hwnd, HWND.Null, x, y, w, h, Flags);
+        PInvoke.SetWindowPos(hwnd, HWND.Null, adjusted.X, adjusted.Y, adjusted.W, adjusted.H, Flags);
+        return adjusted;
     }
 }

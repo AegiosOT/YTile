@@ -48,8 +48,10 @@ internal static class Program
         bool dryRun = args.Contains("--dry-run");
         bool force = args.Contains("--force");
 
-        using var instanceLock = new Mutex(initiallyOwned: true, @"Local\ytiled-instance", out bool firstInstance);
-        if (!firstInstance)
+        // Semaphore, not Mutex: it has no thread affinity, so the async
+        // continuation at shutdown can release it before the drain delay.
+        using var instanceLock = new Semaphore(1, 1, @"Local\ytiled-instance", out _);
+        if (!instanceLock.WaitOne(0))
         {
             Console.Error.WriteLine("ytiled: another instance is already running.");
             return 1;
@@ -93,6 +95,14 @@ internal static class Program
         Console.WriteLine($"ytiled {Version}{(dryRun ? " [dry-run]" : "")} — Ctrl+C to exit.");
         var manager = new WindowManager(Version, dryRun, startPaused, gap: 8);
         await manager.RunAsync(wm.Reader, cts.Token);
+
+        // Reached via Ctrl+C or 'ytile stop'. Shut down the listener and IPC so
+        // no new commands queue against the dead actor, let a successor start,
+        // then give the in-flight stop reply a moment to flush.
+        EventListener.Stop();
+        cts.Cancel();
+        instanceLock.Release();
+        await Task.Delay(300, CancellationToken.None);
         return 0;
     }
 }

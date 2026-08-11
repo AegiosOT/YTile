@@ -12,7 +12,7 @@ public sealed record RectDto(int X, int Y, int W, int H);
 
 public sealed record WindowDto(long Hwnd, uint Pid, string Exe, string Title, RectDto Rect);
 
-public sealed record WorkspaceDto(string Layout, int Focused, IReadOnlyList<WindowDto> Windows);
+public sealed record WorkspaceDto(string Layout, int Focused, IReadOnlyList<WindowDto> Windows, IReadOnlyList<WindowDto> Floating);
 
 public sealed record MonitorDto(string Device, bool Primary, RectDto WorkArea, WorkspaceDto Workspace);
 
