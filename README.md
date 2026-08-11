@@ -35,8 +35,9 @@ Early development.
 - [x] IPC subscription stream + work-area reservation for bars ([docs/YTILE-IPC.md](docs/YTILE-IPC.md))
 - [x] Config file: `~/.config/ytile/ytile.json` — gap, border color, default layout, window rules
   (ignore/float by exe/class/title; built-in ignores for status bars), `ytile reload`
-- [ ] Monitor reconciliation (hotplug, resume, work-area changes)
-- [ ] Drag-to-swap, resize deltas, monocle
+- [x] Monitor reconciliation (hotplug, resume, work-area changes)
+- [x] Drag-to-swap (drop a window on another cell), monocle (`ytile monocle`)
+- [ ] Resize deltas (manual resizes currently snap back)
 
 ## Building
 
