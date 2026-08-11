@@ -89,6 +89,7 @@ internal static class Program
             }
         }, CancellationToken.None);
 
+        DisplayListener.Start(wm.Writer);
         var events = new EventHub();
         var ipc = new IpcServer(wm.Writer, events);
         _ = Task.Run(() => events.RunAsync(cts.Token), CancellationToken.None);
@@ -112,6 +113,7 @@ internal static class Program
         // no new commands queue against the dead actor, let a successor start,
         // then give the in-flight stop reply a moment to flush.
         EventListener.Stop();
+        DisplayListener.Stop();
         cts.Cancel();
         instanceLock.Release();
         await Task.Delay(300, CancellationToken.None);

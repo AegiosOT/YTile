@@ -7,6 +7,22 @@ DispatchMessageW
 PostThreadMessageW
 GetCurrentThreadId
 
+// Hidden broadcast window (display/power notifications)
+RegisterClassW
+UnregisterClassW
+CreateWindowExW
+DestroyWindow
+DefWindowProcW
+GetModuleHandleW
+RegisterSuspendResumeNotification
+UnregisterSuspendResumeNotification
+WM_DISPLAYCHANGE
+WM_DEVICECHANGE
+WM_SETTINGCHANGE
+WM_POWERBROADCAST
+PBT_APMRESUMEAUTOMATIC
+PBT_APMRESUMESUSPEND
+
 // Window probes
 GetWindowTextW
 GetClassNameW

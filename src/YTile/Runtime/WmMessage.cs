@@ -17,6 +17,16 @@ internal abstract record WmMessage
     {
         public static readonly ReaperTick Instance = new();
     }
+
+    internal sealed record DisplayChange : WmMessage
+    {
+        public static readonly DisplayChange Instance = new();
+    }
+
+    internal sealed record PowerResume : WmMessage
+    {
+        public static readonly PowerResume Instance = new();
+    }
 }
 
 internal enum Direction

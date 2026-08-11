@@ -55,7 +55,7 @@ internal sealed class MonitorCtx
         }
     }
 
-    public MonitorDesc Desc { get; }
+    public MonitorDesc Desc { get; set; }
     public List<Workspace> Workspaces { get; } = [];
     public int Active { get; set; }
     public Workspace ActiveWs => Workspaces[Active];
@@ -96,6 +96,15 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     private nint _borderHwnd;
     private nint _dragHwnd;
 
+    // Monitor reconciliation timings (all load-bearing against real OS behavior):
+    // 500ms trailing debounce on change bursts, 3s grace before trusting a
+    // monitor removal (docks report spurious removals on resume), 10s after
+    // resume during which minimize events are ignored (the OS minimizes and
+    // shuffles windows while re-initializing displays).
+    private long _displayChangePendingAtMs;
+    private long _removalGraceStartMs;
+    private long _resumeGraceUntilMs;
+
     public async Task RunAsync(ChannelReader<WmMessage> reader, CancellationToken ct)
     {
         Bootstrap();
@@ -129,6 +138,15 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                         case WmMessage.ReaperTick:
                             ReapDeadWindows();
                             VerifyCellFits();
+                            CheckDisplayChange();
+                            break;
+                        case WmMessage.DisplayChange:
+                            _displayChangePendingAtMs = Environment.TickCount64;
+                            break;
+                        case WmMessage.PowerResume:
+                            _resumeGraceUntilMs = Environment.TickCount64 + 10_000;
+                            _displayChangePendingAtMs = Environment.TickCount64;
+                            Log("resume from sleep — minimize suppression for 10s");
                             break;
                     }
                 }
@@ -345,8 +363,16 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 break;
 
             case WmEventKind.Destroy:
-            case WmEventKind.Minimize:
                 RemoveWindow(e.Hwnd);
+                break;
+
+            case WmEventKind.Minimize:
+                // The OS spuriously minimizes windows while re-initializing
+                // displays after resume — don't unmanage during the grace.
+                if (Environment.TickCount64 >= _resumeGraceUntilMs)
+                {
+                    RemoveWindow(e.Hwnd);
+                }
                 break;
 
             case WmEventKind.FocusChange:
@@ -622,6 +648,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             // must not keep occupying a layout slot.
             if (loc.W == _monitors[loc.M].Active
                 && !_selfCloaked.Contains(hwnd)
+                && Environment.TickCount64 >= _resumeGraceUntilMs
                 && (!PInvoke.IsWindowVisible(h) || PInvoke.IsIconic(h)))
             {
                 (dead ??= []).Add(hwnd);
@@ -736,6 +763,150 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
 
     private bool IsFloating((int M, int W) loc, nint hwnd)
         => _monitors[loc.M].Workspaces[loc.W].Floating.Exists(w => w.Hwnd == hwnd);
+
+    /// <summary>Runs on reaper ticks: applies a debounced display change.</summary>
+    private void CheckDisplayChange()
+    {
+        long now = Environment.TickCount64;
+        if (_displayChangePendingAtMs == 0 || now - _displayChangePendingAtMs < 500)
+        {
+            return;
+        }
+
+        List<MonitorDesc> fresh = MonitorProbe.Enumerate();
+        if (fresh.Count == 0)
+        {
+            return; // transient (display re-init) — retry next tick
+        }
+
+        var freshDevices = new HashSet<string>(fresh.Select(d => d.Device));
+        bool removalDetected = _monitors.Exists(mc => !freshDevices.Contains(mc.Desc.Device));
+        if (removalDetected)
+        {
+            // Docks report spurious removals on resume — wait out the grace
+            // period; if the monitor reappears, this resolves to a no-op.
+            if (_removalGraceStartMs == 0)
+            {
+                _removalGraceStartMs = now;
+                Log("monitor removal detected — confirming for 3s");
+                return;
+            }
+            if (now - _removalGraceStartMs < 3000)
+            {
+                return;
+            }
+        }
+
+        _displayChangePendingAtMs = 0;
+        _removalGraceStartMs = 0;
+        ApplyMonitorChanges(fresh);
+    }
+
+    /// <summary>
+    /// Rebuilds the monitor list preserving every workspace (and its windows)
+    /// by device name; windows from vanished monitors move to the same-index
+    /// workspace of the first remaining monitor.
+    /// </summary>
+    private void ApplyMonitorChanges(List<MonitorDesc> fresh)
+    {
+        var byDevice = _monitors.ToDictionary(mc => mc.Desc.Device);
+        var rebuilt = new List<MonitorCtx>(fresh.Count);
+        foreach (MonitorDesc desc in fresh)
+        {
+            if (byDevice.Remove(desc.Device, out MonitorCtx? existing))
+            {
+                existing.Desc = desc; // refreshed handle + geometry + work area
+                rebuilt.Add(existing);
+            }
+            else
+            {
+                var mc = new MonitorCtx(desc);
+                foreach (Workspace ws in mc.Workspaces)
+                {
+                    ws.Layout = _config.DefaultLayout;
+                }
+                rebuilt.Add(mc);
+                Log($"monitor added: {desc.Device} work={desc.WorkArea}");
+            }
+        }
+
+        // Whatever is left in byDevice vanished — rehome its windows.
+        foreach (MonitorCtx orphan in byDevice.Values)
+        {
+            Log($"monitor removed: {orphan.Desc.Device} — rehoming its windows");
+            MonitorCtx target = rebuilt[0];
+            for (int i = 0; i < WorkspaceCount; i++)
+            {
+                target.Workspaces[i].Windows.AddRange(orphan.Workspaces[i].Windows);
+                target.Workspaces[i].Floating.AddRange(orphan.Workspaces[i].Floating);
+            }
+        }
+
+        _monitors.Clear();
+        _monitors.AddRange(rebuilt);
+        _focusedMonitor = Math.Clamp(_focusedMonitor, 0, _monitors.Count - 1);
+
+        // Monitor indices changed — rebuild the location map from the lists.
+        _windowLoc.Clear();
+        for (int m = 0; m < _monitors.Count; m++)
+        {
+            for (int w = 0; w < WorkspaceCount; w++)
+            {
+                foreach (ManagedWindow win in _monitors[m].Workspaces[w].Windows)
+                {
+                    _windowLoc[win.Hwnd] = (m, w);
+                }
+                foreach (ManagedWindow win in _monitors[m].Workspaces[w].Floating)
+                {
+                    _windowLoc[win.Hwnd] = (m, w);
+                }
+            }
+        }
+
+        Log($"monitors reconciled: {_monitors.Count} active, {_windowLoc.Count} windows");
+        if (!_paused)
+        {
+            // Position first, uncloak after (the Chromium rule), then hide
+            // anything that landed on an inactive workspace.
+            RetileAll();
+            NormalizeCloaks();
+        }
+        PublishEvent("monitors_change");
+    }
+
+    /// <summary>Restores the invariant: hidden iff on an inactive workspace.</summary>
+    private void NormalizeCloaks()
+    {
+        for (int m = 0; m < _monitors.Count; m++)
+        {
+            MonitorCtx mc = _monitors[m];
+            for (int w = 0; w < WorkspaceCount; w++)
+            {
+                bool shouldHide = w != mc.Active;
+                foreach (ManagedWindow win in mc.Workspaces[w].Windows)
+                {
+                    NormalizeCloak(win.Hwnd, shouldHide);
+                }
+                foreach (ManagedWindow win in mc.Workspaces[w].Floating)
+                {
+                    NormalizeCloak(win.Hwnd, shouldHide);
+                }
+            }
+        }
+    }
+
+    private void NormalizeCloak(nint hwnd, bool shouldHide)
+    {
+        bool hidden = _selfCloaked.Contains(hwnd);
+        if (shouldHide && !hidden)
+        {
+            CloakWin(hwnd);
+        }
+        else if (!shouldHide && hidden)
+        {
+            UncloakWin(hwnd);
+        }
+    }
 
     private static unsafe nint ForegroundHwnd() => (nint)PInvoke.GetForegroundWindow().Value;
 
