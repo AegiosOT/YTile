@@ -23,13 +23,17 @@ internal static class Program
         }
 
         string cmd = args[0];
-        string? arg = args.Length > 1 ? args[1] : null;
+        string? arg = args.Length > 1 ? string.Join(' ', args[1..]) : null;
 
         switch (cmd)
         {
             case "state" or "pause" or "resume" or "retile" or "version" or "float" or "stop":
                 break;
+            case "subscribe":
+                return Subscribe();
             case "layout" or "focus" or "move" or "workspace" or "send" when arg is not null:
+                break;
+            case "reserve" when args.Length == 6:
                 break;
             case "layout":
                 Console.Error.WriteLine("usage: ytile layout <bsp|columns>");
@@ -39,6 +43,9 @@ internal static class Program
                 return 2;
             case "workspace" or "send":
                 Console.Error.WriteLine($"usage: ytile {cmd} <1-9>");
+                return 2;
+            case "reserve":
+                Console.Error.WriteLine("usage: ytile reserve <monitor> <left> <top> <right> <bottom>");
                 return 2;
             default:
                 Console.Error.WriteLine($"ytile: unknown command '{cmd}'");
@@ -68,6 +75,45 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    /// <summary>Streams daemon notifications (one JSON per line) to stdout until
+    /// the pipe closes — the integration point for bars and scripts.</summary>
+    private static int Subscribe()
+    {
+        using var client = new NamedPipeClientStream(".", "ytile", PipeDirection.InOut, PipeOptions.None);
+        try
+        {
+            client.Connect(2000);
+        }
+        catch (Exception)
+        {
+            Console.Error.WriteLine("ytile: cannot reach ytiled — is the daemon running?");
+            return 1;
+        }
+
+        try
+        {
+            using var writer = new StreamWriter(client, leaveOpen: true) { AutoFlush = true };
+            using var reader = new StreamReader(client, leaveOpen: true);
+            writer.WriteLine(JsonSerializer.Serialize(new CommandRequest("subscribe"), ProtocolJsonContext.Default.CommandRequest));
+            string? ack = reader.ReadLine();
+            if (ack is null)
+            {
+                Console.Error.WriteLine("ytile: daemon closed the pipe without replying");
+                return 1;
+            }
+
+            while (reader.ReadLine() is { } line)
+            {
+                Console.WriteLine(line);
+            }
+            return 0;
+        }
+        catch (IOException)
+        {
+            return 0; // daemon went away — clean end of stream
+        }
     }
 
     private static CommandReply? Send(CommandRequest request)
@@ -169,6 +215,8 @@ internal static class Program
               send <1-9>                send the focused window to a workspace
               layout <bsp|columns>      set layout on the active workspace
               float                     toggle floating for the focused window
+              subscribe                 stream state-change notifications (NDJSON)
+              reserve <m> <l> <t> <r> <b>  reserve screen edges on a monitor (bars)
               retile                    recompute and apply the layout
               pause                     restore hidden windows, stop reacting
               resume                    resync from the OS and start tiling

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Threading.Channels;
 using Windows.Win32;
 using Windows.Win32.Foundation;
@@ -57,6 +58,15 @@ internal sealed class MonitorCtx
     public List<Workspace> Workspaces { get; } = [];
     public int Active { get; set; }
     public Workspace ActiveWs => Workspaces[Active];
+
+    /// <summary>Reserved strip per edge (bars) — subtracted from the work area.</summary>
+    public (int L, int T, int R, int B) Reserved { get; set; }
+
+    public RectI EffectiveWorkArea => new(
+        Desc.WorkArea.X + Reserved.L,
+        Desc.WorkArea.Y + Reserved.T,
+        Math.Max(0, Desc.WorkArea.W - Reserved.L - Reserved.R),
+        Math.Max(0, Desc.WorkArea.H - Reserved.T - Reserved.B));
 }
 
 /// <summary>
@@ -66,7 +76,7 @@ internal sealed class MonitorCtx
 /// _selfCloaked set suppresses the Cloak/Hide events our own hiding produces
 /// so they are not mistaken for windows going away.
 /// </summary>
-internal sealed class WindowManager(string version, bool dryRun, bool startPaused, int gap)
+internal sealed class WindowManager(string version, bool dryRun, bool startPaused, int gap, EventHub events)
 {
     public const int WorkspaceCount = 9;
 
@@ -187,6 +197,19 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         {
             RetileAll();
         }
+        PublishEvent("ready");
+    }
+
+    /// <summary>Pushes {event, state} to IPC subscribers (bars, scripts).</summary>
+    private void PublishEvent(string name)
+    {
+        if (!events.HasSubscribers)
+        {
+            return;
+        }
+
+        var notification = new NotificationDto(name, BuildState());
+        events.Publish(JsonSerializer.Serialize(notification, ProtocolJsonContext.Default.NotificationDto));
     }
 
     /// <summary>Aligns focused monitor/window with whatever really has foreground.</summary>
@@ -240,9 +263,11 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         if (fresh.Count > 0)
         {
             var layouts = new Dictionary<string, List<LayoutKind>>();
+            var reservations = new Dictionary<string, (int L, int T, int R, int B)>();
             foreach (MonitorCtx mc in _monitors)
             {
                 layouts[mc.Desc.Device] = [.. mc.Workspaces.Select(w => w.Layout)];
+                reservations[mc.Desc.Device] = mc.Reserved;
             }
 
             _monitors.Clear();
@@ -255,6 +280,10 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                     {
                         mc.Workspaces[i].Layout = kinds[i];
                     }
+                }
+                if (reservations.TryGetValue(desc.Device, out (int L, int T, int R, int B) reserved))
+                {
+                    mc.Reserved = reserved;
                 }
                 _monitors.Add(mc);
             }
@@ -372,11 +401,13 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             mc.ActiveWs.FocusedIndex = idx;
             _focusedMonitor = loc.M;
             SetBorder(hwnd);
+            PublishEvent("focus_change");
         }
         else if (IsFloating(loc, hwnd))
         {
             _focusedMonitor = loc.M;
             SetBorder(hwnd);
+            PublishEvent("focus_change");
         }
     }
 
@@ -419,6 +450,10 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         if (retile)
         {
             Retile(monitor);
+        }
+        if (!adopting)
+        {
+            PublishEvent("manage");
         }
 
         return true;
@@ -485,6 +520,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         {
             Retile(loc.M);
         }
+        PublishEvent("unmanage");
     }
 
     private int MonitorIndexFor(nint hwnd)
@@ -505,7 +541,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     {
         MonitorCtx mc = _monitors[monitor];
         Workspace ws = mc.ActiveWs;
-        RectI[] cells = Layouts.Compute(ws.Layout, mc.Desc.WorkArea, ws.Windows.Count, gap);
+        RectI[] cells = Layouts.Compute(ws.Layout, mc.EffectiveWorkArea, ws.Windows.Count, gap);
         for (int i = 0; i < ws.Windows.Count; i++)
         {
             ManagedWindow w = ws.Windows[i];
@@ -667,6 +703,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         ws.Floating.Add(w);
         Log($"float 0x{hwnd:X8} {w.Exe} — {reason}");
         Retile(monitor);
+        PublishEvent("float_change");
     }
 
     private bool IsFloating((int M, int W) loc, nint hwnd)
@@ -802,6 +839,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         }
 
         Log($"monitor {monitor} -> workspace {index + 1}");
+        PublishEvent("workspace_change");
     }
 
     private CommandReply HandleCommand(CommandRequest req)
@@ -823,7 +861,36 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 UncloakAll();
                 ClearBorder();
                 Log("paused");
+                PublishEvent("pause");
                 return new CommandReply(true, Message: "paused");
+
+            case "reserve":
+            {
+                // "monitor left top right bottom" — a bar reserving its strip.
+                string[] parts = req.Arg?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? [];
+                if (parts.Length != 5
+                    || !int.TryParse(parts[0], out int rm)
+                    || !int.TryParse(parts[1], out int rl)
+                    || !int.TryParse(parts[2], out int rt)
+                    || !int.TryParse(parts[3], out int rr)
+                    || !int.TryParse(parts[4], out int rb))
+                {
+                    return new CommandReply(false, "usage: reserve <monitor> <left> <top> <right> <bottom>");
+                }
+                if (rm < 0 || rm >= _monitors.Count)
+                {
+                    return new CommandReply(false, $"monitor must be 0..{_monitors.Count - 1}");
+                }
+
+                _monitors[rm].Reserved = (rl, rt, rr, rb);
+                if (!_paused)
+                {
+                    Retile(rm);
+                }
+                Log($"monitor {rm} reserved l={rl} t={rt} r={rr} b={rb}");
+                PublishEvent("reserve");
+                return new CommandReply(true, Message: $"reserved on monitor {rm}");
+            }
 
             case "resume":
                 _paused = false;
@@ -835,6 +902,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 Resync();
                 RetileAll();
                 Log($"resumed, managing {_windowLoc.Count} windows");
+                PublishEvent("resume");
                 return new CommandReply(true, Message: $"resumed ({_windowLoc.Count} windows)");
 
             case "retile":
@@ -843,6 +911,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                     return new CommandReply(false, "paused — resume first");
                 }
                 RetileAll();
+                PublishEvent("retile");
                 return new CommandReply(true, Message: "retiled");
 
             case "workspace":
@@ -890,6 +959,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 {
                     Retile(_focusedMonitor);
                 }
+                PublishEvent("layout_change");
                 return new CommandReply(true, Message: $"layout {req.Arg} on monitor {_focusedMonitor}");
             }
 
@@ -924,6 +994,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                     int insertAt = Math.Min(ws.FocusedIndex + 1, ws.Windows.Count);
                     ws.Windows.Insert(insertAt, w);
                     Retile(_focusedMonitor);
+                    PublishEvent("float_change");
                     return new CommandReply(true, Message: $"tiled 0x{target:X8}");
                 }
 
@@ -968,6 +1039,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 (ws.Windows[ws.FocusedIndex], ws.Windows[target]) = (ws.Windows[target], ws.Windows[ws.FocusedIndex]);
                 ws.FocusedIndex = target;
                 Retile(_focusedMonitor);
+                PublishEvent("move");
                 return new CommandReply(true, Message: "moved");
             }
 
@@ -1041,6 +1113,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         }
 
         Log($"send 0x{target:X8} -> workspace {number}");
+        PublishEvent("workspace_change");
         return new CommandReply(true, Message: $"sent 0x{target:X8} to workspace {number}");
     }
 
@@ -1126,10 +1199,11 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                     ws.Layout.ToString().ToLowerInvariant(), ws.FocusedIndex, windows, floating));
             }
 
+            RectI area = mc.EffectiveWorkArea;
             monitors.Add(new MonitorDto(
                 mc.Desc.Device,
                 mc.Desc.Primary,
-                new RectDto(mc.Desc.WorkArea.X, mc.Desc.WorkArea.Y, mc.Desc.WorkArea.W, mc.Desc.WorkArea.H),
+                new RectDto(area.X, area.Y, area.W, area.H),
                 mc.Active,
                 workspaces));
         }

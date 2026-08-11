@@ -18,7 +18,11 @@ public sealed record MonitorDto(string Device, bool Primary, RectDto WorkArea, i
 
 public sealed record StateDto(string Version, bool Paused, bool DryRun, IReadOnlyList<MonitorDto> Monitors);
 
+/// <summary>One NDJSON line pushed to each subscriber on every state change.</summary>
+public sealed record NotificationDto(string Event, StateDto State);
+
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
 [JsonSerializable(typeof(CommandRequest))]
 [JsonSerializable(typeof(CommandReply))]
+[JsonSerializable(typeof(NotificationDto))]
 public sealed partial class ProtocolJsonContext : JsonSerializerContext;

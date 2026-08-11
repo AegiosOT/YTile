@@ -6,13 +6,16 @@ using YTile.Protocol;
 namespace YTile.Runtime;
 
 /// <summary>
-/// Named-pipe NDJSON server: one request line in, one reply line out, per
-/// connection. Commands are posted into the actor queue and answered via a
-/// TaskCompletionSource — the IPC thread never touches manager state.
+/// Named-pipe NDJSON server. Request/reply connections carry one line each
+/// way; a "subscribe" request keeps the connection open and hands it to the
+/// EventHub, which streams a NotificationDto line on every state change.
+/// Commands are posted into the actor queue and answered via a
+/// TaskCompletionSource — the IPC threads never touch manager state.
 /// </summary>
-internal sealed class IpcServer(ChannelWriter<WmMessage> wm)
+internal sealed class IpcServer(ChannelWriter<WmMessage> wm, EventHub events)
 {
     public const string PipeName = "ytile";
+    private const int MaxInstances = 8;
 
     public async Task RunAsync(CancellationToken ct)
     {
@@ -24,18 +27,11 @@ internal sealed class IpcServer(ChannelWriter<WmMessage> wm)
             try
             {
                 server = new NamedPipeServerStream(
-                    PipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                    PipeName, PipeDirection.InOut, MaxInstances, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
                 await server.WaitForConnectionAsync(ct);
-                using var reader = new StreamReader(server, leaveOpen: true);
-                await using var writer = new StreamWriter(server, leaveOpen: true) { AutoFlush = true };
-
-                // A connected-but-silent client must not wedge the single pipe instance.
-                string? line = await reader.ReadLineAsync(ct).AsTask().WaitAsync(TimeSpan.FromSeconds(5), ct);
-                if (line is not null)
-                {
-                    CommandReply reply = await DispatchAsync(line, ct);
-                    await writer.WriteLineAsync(JsonSerializer.Serialize(reply, ProtocolJsonContext.Default.CommandReply));
-                }
+                NamedPipeServerStream connected = server;
+                server = null; // the handler task owns it now
+                _ = Task.Run(() => HandleConnectionAsync(connected, ct), CancellationToken.None);
             }
             catch (OperationCanceledException)
             {
@@ -43,7 +39,7 @@ internal sealed class IpcServer(ChannelWriter<WmMessage> wm)
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} ipc error: {ex.Message}");
+                Log($"ipc error: {ex.Message}");
                 try
                 {
                     await Task.Delay(250, ct);
@@ -63,23 +59,79 @@ internal sealed class IpcServer(ChannelWriter<WmMessage> wm)
         }
     }
 
-    private async Task<CommandReply> DispatchAsync(string line, CancellationToken ct)
+    private async Task HandleConnectionAsync(NamedPipeServerStream server, CancellationToken ct)
     {
-        CommandRequest? request;
+        bool handedOff = false;
         try
         {
-            request = JsonSerializer.Deserialize(line, ProtocolJsonContext.Default.CommandRequest);
-        }
-        catch (JsonException ex)
-        {
-            return new CommandReply(false, $"bad request: {ex.Message}");
-        }
+            using var reader = new StreamReader(server, leaveOpen: true);
+            var writer = new StreamWriter(server, leaveOpen: true) { AutoFlush = true };
+            try
+            {
+                // A connected-but-silent client must not hold an instance forever.
+                string? line = await reader.ReadLineAsync(ct).AsTask().WaitAsync(TimeSpan.FromSeconds(5), ct);
+                if (line is null)
+                {
+                    return;
+                }
 
-        if (request is null)
-        {
-            return new CommandReply(false, "empty request");
-        }
+                CommandRequest? request;
+                try
+                {
+                    request = JsonSerializer.Deserialize(line, ProtocolJsonContext.Default.CommandRequest);
+                }
+                catch (JsonException ex)
+                {
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(
+                        new CommandReply(false, $"bad request: {ex.Message}"), ProtocolJsonContext.Default.CommandReply));
+                    return;
+                }
 
+                if (request is null)
+                {
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(
+                        new CommandReply(false, "empty request"), ProtocolJsonContext.Default.CommandReply));
+                    return;
+                }
+
+                if (request.Cmd == "subscribe")
+                {
+                    await writer.WriteLineAsync(JsonSerializer.Serialize(
+                        new CommandReply(true, Message: "subscribed"), ProtocolJsonContext.Default.CommandReply));
+                    events.Attach(server, writer);
+                    handedOff = true;
+                    return;
+                }
+
+                CommandReply reply = await DispatchAsync(request, ct);
+                await writer.WriteLineAsync(JsonSerializer.Serialize(reply, ProtocolJsonContext.Default.CommandReply));
+            }
+            finally
+            {
+                if (!handedOff)
+                {
+                    await writer.DisposeAsync();
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Log($"ipc connection error: {ex.Message}");
+        }
+        finally
+        {
+            if (!handedOff)
+            {
+                await server.DisposeAsync();
+            }
+        }
+    }
+
+    private async Task<CommandReply> DispatchAsync(CommandRequest request, CancellationToken ct)
+    {
         var tcs = new TaskCompletionSource<CommandReply>(TaskCreationOptions.RunContinuationsAsynchronously);
         wm.TryWrite(new WmMessage.Command(request, tcs));
         try
@@ -94,4 +146,6 @@ internal sealed class IpcServer(ChannelWriter<WmMessage> wm)
             return new CommandReply(false, "daemon busy (timeout)");
         }
     }
+
+    private static void Log(string message) => Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {message}");
 }

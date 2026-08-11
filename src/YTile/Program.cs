@@ -88,12 +88,14 @@ internal static class Program
             }
         }, CancellationToken.None);
 
-        var ipc = new IpcServer(wm.Writer);
+        var events = new EventHub();
+        var ipc = new IpcServer(wm.Writer, events);
+        _ = Task.Run(() => events.RunAsync(cts.Token), CancellationToken.None);
         _ = Task.Run(() => ipc.RunAsync(cts.Token), CancellationToken.None);
         _ = Task.Run(() => Reaper.RunAsync(wm.Writer, cts.Token), CancellationToken.None);
 
         Console.WriteLine($"ytiled {Version}{(dryRun ? " [dry-run]" : "")} — Ctrl+C to exit.");
-        var manager = new WindowManager(Version, dryRun, startPaused, gap: 8);
+        var manager = new WindowManager(Version, dryRun, startPaused, gap: 8, events);
         await manager.RunAsync(wm.Reader, cts.Token);
 
         // Reached via Ctrl+C or 'ytile stop'. Shut down the listener and IPC so
