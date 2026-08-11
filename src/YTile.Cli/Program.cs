@@ -27,7 +27,7 @@ internal static class Program
 
         switch (cmd)
         {
-            case "state" or "pause" or "resume" or "retile" or "version" or "float" or "stop":
+            case "state" or "pause" or "resume" or "retile" or "version" or "float" or "stop" or "reload":
                 break;
             case "subscribe":
                 return Subscribe();
@@ -218,6 +218,7 @@ internal static class Program
               subscribe                 stream state-change notifications (NDJSON)
               reserve <m> <l> <t> <r> <b>  reserve screen edges on a monitor (bars)
               retile                    recompute and apply the layout
+              reload                    reload ~/.config/ytile/ytile.json and resync
               pause                     restore hidden windows, stop reacting
               resume                    resync from the OS and start tiling
               stop                      shut the daemon down

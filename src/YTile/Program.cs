@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Threading.Channels;
 using Windows.Win32;
 using Windows.Win32.UI.HiDpi;
+using YTile.Config;
 using YTile.Runtime;
 using YTile.Win32;
 
@@ -94,8 +95,17 @@ internal static class Program
         _ = Task.Run(() => ipc.RunAsync(cts.Token), CancellationToken.None);
         _ = Task.Run(() => Reaper.RunAsync(wm.Writer, cts.Token), CancellationToken.None);
 
+        YTileConfig config = YTileConfig.Load(null, out string? configError);
+        Console.WriteLine(File.Exists(YTileConfig.DefaultPath)
+            ? $"config: {YTileConfig.DefaultPath}"
+            : $"config: defaults (no file at {YTileConfig.DefaultPath})");
+        if (configError is not null)
+        {
+            Console.WriteLine($"config problems: {configError}");
+        }
+
         Console.WriteLine($"ytiled {Version}{(dryRun ? " [dry-run]" : "")} — Ctrl+C to exit.");
-        var manager = new WindowManager(Version, dryRun, startPaused, gap: 8, events);
+        var manager = new WindowManager(Version, dryRun, startPaused, config, events);
         await manager.RunAsync(wm.Reader, cts.Token);
 
         // Reached via Ctrl+C or 'ytile stop'. Shut down the listener and IPC so

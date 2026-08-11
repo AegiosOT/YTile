@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.UI.WindowsAndMessaging;
+using YTile.Config;
 using YTile.Core;
 using YTile.Protocol;
 using YTile.Win32;
@@ -76,15 +77,14 @@ internal sealed class MonitorCtx
 /// _selfCloaked set suppresses the Cloak/Hide events our own hiding produces
 /// so they are not mistaken for windows going away.
 /// </summary>
-internal sealed class WindowManager(string version, bool dryRun, bool startPaused, int gap, EventHub events)
+internal sealed class WindowManager(string version, bool dryRun, bool startPaused, YTileConfig config, EventHub events)
 {
     public const int WorkspaceCount = 9;
 
-    // COLORREF is 0x00BBGGRR — this is #569CD6 (calm blue).
-    private const uint FocusBorderColor = 0x00D69C56;
-
     // A clamped resize larger than this margin means the window refused the cell.
     private const int FitTolerance = 8;
+
+    private YTileConfig _config = config;
 
     private readonly List<MonitorCtx> _monitors = [];
     private readonly Dictionary<nint, (int M, int W)> _windowLoc = [];
@@ -181,7 +181,12 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
 
         foreach (MonitorDesc desc in MonitorProbe.Enumerate())
         {
-            _monitors.Add(new MonitorCtx(desc));
+            var mc = new MonitorCtx(desc);
+            foreach (Workspace ws in mc.Workspaces)
+            {
+                ws.Layout = _config.DefaultLayout;
+            }
+            _monitors.Add(mc);
             Log($"monitor {desc.Device} work={desc.WorkArea}{(desc.Primary ? " primary" : "")}");
         }
 
@@ -274,6 +279,10 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             foreach (MonitorDesc desc in fresh)
             {
                 var mc = new MonitorCtx(desc);
+                foreach (Workspace ws in mc.Workspaces)
+                {
+                    ws.Layout = _config.DefaultLayout;
+                }
                 if (layouts.TryGetValue(desc.Device, out List<LayoutKind>? kinds))
                 {
                     for (int i = 0; i < WorkspaceCount; i++)
@@ -428,6 +437,25 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             return false;
         }
 
+        RuleAction? rule = _config.RuleFor(in snapshot);
+        if (rule == RuleAction.Ignore)
+        {
+            return false;
+        }
+        if (rule == RuleAction.Float)
+        {
+            int floatMonitor = MonitorIndexFor(hwnd);
+            MonitorCtx floatMc = _monitors[floatMonitor];
+            floatMc.ActiveWs.Floating.Add(new ManagedWindow(hwnd, snapshot.ProcessId, snapshot.ExeName));
+            _windowLoc[hwnd] = (floatMonitor, floatMc.Active);
+            if (!adopting)
+            {
+                Log($"manage 0x{hwnd:X8} {snapshot.ExeName} \"{snapshot.Title}\" -> floating (rule)");
+                PublishEvent("manage");
+            }
+            return true;
+        }
+
         // A maximized window would keep WS_MAXIMIZE while we position it,
         // desyncing its restore behavior — restore it before tiling.
         if (snapshot.Zoomed && !dryRun)
@@ -541,7 +569,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     {
         MonitorCtx mc = _monitors[monitor];
         Workspace ws = mc.ActiveWs;
-        RectI[] cells = Layouts.Compute(ws.Layout, mc.EffectiveWorkArea, ws.Windows.Count, gap);
+        RectI[] cells = Layouts.Compute(ws.Layout, mc.EffectiveWorkArea, ws.Windows.Count, _config.Gap);
         for (int i = 0; i < ws.Windows.Count; i++)
         {
             ManagedWindow w = ws.Windows[i];
@@ -852,6 +880,21 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             case "stop":
                 _stopRequested = true;
                 return new CommandReply(true, Message: "stopping");
+
+            case "reload":
+            {
+                _config = YTileConfig.Load(null, out string? configError);
+                if (!_paused)
+                {
+                    Resync();
+                    RetileAll();
+                }
+                Log(configError is null ? "config reloaded" : $"config reloaded with problems: {configError}");
+                PublishEvent("reload");
+                return configError is null
+                    ? new CommandReply(true, Message: $"reloaded ({_windowLoc.Count} windows)")
+                    : new CommandReply(false, configError);
+            }
 
             case "state":
                 return new CommandReply(true, State: BuildState());
@@ -1222,7 +1265,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         {
             FocusControl.SetBorder(_borderHwnd, null);
         }
-        FocusControl.SetBorder(hwnd, FocusBorderColor);
+        FocusControl.SetBorder(hwnd, _config.FocusBorderColor);
         _borderHwnd = hwnd;
     }
 

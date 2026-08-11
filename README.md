@@ -32,7 +32,9 @@ Early development.
 - [x] Reaper (liveness sweep)
 - [x] Floating layer: auto-float when an app's minimum size exceeds its cell, `ytile float` toggle
 - [x] Workspaces: 9 per monitor, cloak-based hiding (`IApplicationView::SetCloak`), crash-safe restore
-- [ ] Application quirks table (community `applications.json`)
+- [x] IPC subscription stream + work-area reservation for bars ([docs/YTILE-IPC.md](docs/YTILE-IPC.md))
+- [x] Config file: `~/.config/ytile/ytile.json` — gap, border color, default layout, window rules
+  (ignore/float by exe/class/title; built-in ignores for status bars), `ytile reload`
 - [ ] Monitor reconciliation (hotplug, resume, work-area changes)
 - [ ] Drag-to-swap, resize deltas, monocle
 
@@ -66,6 +68,28 @@ ytile pause / resume / retile / stop
 
 Windows that refuse to shrink to their cell (launchers like Battle.net enforce a
 minimum size) are detected automatically and float instead of overlapping the layout.
+
+## Configuration
+
+`~/.config/ytile/ytile.json` (see [examples/ytile.json](examples/ytile.json); all keys optional):
+
+```json
+{
+  "gap": 8,
+  "focusBorderColor": "#569CD6",
+  "defaultLayout": "bsp",
+  "rules": [
+    { "match": "exe", "pattern": "Battle.net.exe", "action": "float" },
+    { "match": "title", "pattern": "Picture.in.[Pp]icture", "strategy": "regex", "action": "float" }
+  ]
+}
+```
+
+Rules match on `exe`/`class`/`title` with `equals` (default), `prefix`, or `regex`
+strategies; actions are `ignore` and `float`. Status bars (komorebi-bar, ybar,
+zebar, yasb) are ignored built-in. `ytile reload` applies changes live.
+Hotkeys: pair with [whkd](https://github.com/LGUG2Z/whkd) — see
+[examples/whkdrc-ytile](examples/whkdrc-ytile).
 
 ## License
 

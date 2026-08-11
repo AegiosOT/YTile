@@ -1,0 +1,10 @@
+{
+  "gap": 8,
+  "focusBorderColor": "#569CD6",
+  "defaultLayout": "bsp",
+  "rules": [
+    { "match": "exe", "pattern": "Battle.net.exe", "action": "float" },
+    { "match": "title", "pattern": "Picture.in.[Pp]icture", "strategy": "regex", "action": "float" },
+    { "match": "class", "pattern": "OleMainThreadWndClass", "action": "ignore" }
+  ]
+}
