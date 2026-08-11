@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/YTile/YTile.csproj" />
+    <Project Path="src/YTile.Cli/YTile.Cli.csproj" />
+  </Folder>
+</Solution>

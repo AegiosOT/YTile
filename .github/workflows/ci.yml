@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build (JIT + analyzers)
+        run: dotnet build YTile.slnx -c Release
+
+      # Guardrail: the shipping configuration is NativeAOT. JIT-only CI lets
+      # AOT-only breakage (trimming, marshaling deltas) land silently.
+      - name: Publish daemon (NativeAOT)
+        run: dotnet publish src/YTile -r win-x64 -c Release -o publish
+
+      - name: Publish CLI (NativeAOT)
+        run: dotnet publish src/YTile.Cli -r win-x64 -c Release -o publish
+
+      - name: Smoke-test AOT binaries
+        run: |
+          ./publish/ytiled.exe --version
+          ./publish/ytile.exe --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ytile-win-x64
+          path: |
+            publish/ytiled.exe
+            publish/ytile.exe

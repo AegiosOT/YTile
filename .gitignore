@@ -1,0 +1,20 @@
+## .NET build output
+bin/
+obj/
+artifacts/
+*.binlog
+
+## IDE
+.vs/
+.idea/
+*.user
+*.suo
+.vscode/
+
+## AOT / publish
+publish/
+*.pdb
+
+## OS
+Thumbs.db
+Desktop.ini

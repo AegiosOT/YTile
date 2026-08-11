@@ -1,0 +1,25 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- OS floor: Windows 10 2004+. DWMWA_BORDER_COLOR (focus border) will require Win11 at runtime. -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- x64-only for now (GetWindowLongPtr and friends are arch-specific; ARM64 can join later). -->
+    <PlatformTarget>x64</PlatformTarget>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- AOT is the shipping configuration; analyzers keep dev (JIT) builds honest. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- [assembly: DisableRuntimeMarshalling] in every project, per the day-one AOT guardrails. -->
+    <Compile Include="$(MSBuildThisFileDirectory)build\AssemblyAttributes.cs" Link="AssemblyAttributes.cs" />
+  </ItemGroup>
+
+</Project>

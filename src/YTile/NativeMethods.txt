@@ -1,0 +1,58 @@
+// Event hooks + message pump
+SetWinEventHook
+UnhookWinEvent
+GetMessageW
+TranslateMessage
+DispatchMessageW
+PostThreadMessageW
+GetCurrentThreadId
+
+// Window probes
+GetWindowTextW
+GetClassNameW
+GetWindowThreadProcessId
+GetWindowRect
+GetForegroundWindow
+GetWindowLongPtrW
+IsWindow
+IsWindowVisible
+IsIconic
+
+// Process identity
+OpenProcess
+CloseHandle
+QueryFullProcessImageNameW
+
+// DWM
+DwmGetWindowAttribute
+
+// DPI
+SetProcessDpiAwarenessContext
+DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+
+// WinEvent constants
+EVENT_SYSTEM_FOREGROUND
+EVENT_SYSTEM_MOVESIZESTART
+EVENT_SYSTEM_MOVESIZEEND
+EVENT_SYSTEM_MINIMIZESTART
+EVENT_SYSTEM_MINIMIZEEND
+EVENT_OBJECT_DESTROY
+EVENT_OBJECT_SHOW
+EVENT_OBJECT_HIDE
+EVENT_OBJECT_FOCUS
+EVENT_OBJECT_NAMECHANGE
+EVENT_OBJECT_CLOAKED
+EVENT_OBJECT_UNCLOAKED
+WINEVENT_OUTOFCONTEXT
+WINEVENT_SKIPOWNPROCESS
+WM_QUIT
+CHILDID_SELF
+OBJECT_IDENTIFIER
+
+// Style / attribute enums
+WINDOW_STYLE
+WINDOW_EX_STYLE
+WINDOW_LONG_PTR_INDEX
+DWMWINDOWATTRIBUTE
+PROCESS_ACCESS_RIGHTS
+PROCESS_NAME_FORMAT
