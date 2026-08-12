@@ -134,6 +134,11 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     // can race DWM's cloak-state propagation, so we poke again shortly after.
     private readonly List<(nint Hwnd, long DueMs)> _pendingNudges = [];
 
+    // Deferred re-tiles after cross-monitor moves: the first positioning on a
+    // new monitor computes frame margins against the old-DPI frame (the async
+    // SetWindowPos hasn't landed), so re-apply once the move settles.
+    private readonly List<(int Monitor, long DueMs)> _pendingRetiles = [];
+
     // After we cloak windows, the OS may hand foreground back to one of them
     // (e.g. when a keybind's transient console closes). Within this window,
     // foreground on a self-cloaked window is churn — not the user asking to
@@ -175,6 +180,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                             VerifyCellFits();
                             CheckDisplayChange();
                             ProcessPendingNudges();
+                            ProcessPendingRetiles();
                             break;
                         case WmMessage.DisplayChange:
                             _displayChangePendingAtMs = Environment.TickCount64;
@@ -404,10 +410,22 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             }
         }
 
+        // Restore each monitor's active workspace BEFORE adoption, so windows
+        // unknown to the snapshot (opened while paused) land on the workspace
+        // that will actually be visible, not workspace 1.
+        foreach (MonitorCtx mc in _monitors)
+        {
+            if (actives.TryGetValue(mc.Desc.Device, out int active))
+            {
+                mc.Active = active;
+            }
+        }
+
         _focusedMonitor = 0;
         _windowLoc.Clear();
+        _pendingRetiles.Clear();
         Adopt();
-        RestorePlacements(placement, actives, focusSlots, focusedDevice);
+        RestorePlacements(placement, focusSlots, focusedDevice);
         SeedFocusFromForeground();
     }
 
@@ -415,12 +433,11 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     /// Moves every re-adopted window back to its snapshotted workspace and
     /// slot. Windows from vanished monitors land on monitor 0, same workspace
     /// index (mirrors hotplug rehoming); windows unknown to the snapshot stay
-    /// where adoption put them. Re-establishes active workspaces, focus
-    /// slots, and the hidden-iff-inactive cloak invariant.
+    /// where adoption put them. Re-establishes focus slots and the
+    /// hidden-iff-inactive cloak invariant.
     /// </summary>
     private void RestorePlacements(
         Dictionary<nint, SavedPlacement> placement,
-        Dictionary<string, int> actives,
         Dictionary<string, int[]> focusSlots,
         string? focusedDevice)
     {
@@ -436,7 +453,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         }
 
         // Pull every known window out of wherever adoption put it...
-        var moves = new List<(ManagedWindow Win, int M, SavedPlacement P)>();
+        var moves = new List<(ManagedWindow Win, int M, SavedPlacement P, bool AdoptedFloating)>();
         foreach (MonitorCtx mc in _monitors)
         {
             foreach (Workspace ws in mc.Workspaces)
@@ -445,7 +462,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 {
                     if (placement.TryGetValue(ws.Windows[i].Hwnd, out SavedPlacement p))
                     {
-                        moves.Add((ws.Windows[i], byDevice.GetValueOrDefault(p.Device, 0), p));
+                        moves.Add((ws.Windows[i], byDevice.GetValueOrDefault(p.Device, 0), p, false));
                         ws.Windows.RemoveAt(i);
                     }
                 }
@@ -453,7 +470,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 {
                     if (placement.TryGetValue(ws.Floating[i].Hwnd, out SavedPlacement p))
                     {
-                        moves.Add((ws.Floating[i], byDevice.GetValueOrDefault(p.Device, 0), p));
+                        moves.Add((ws.Floating[i], byDevice.GetValueOrDefault(p.Device, 0), p, true));
                         ws.Floating.RemoveAt(i);
                     }
                 }
@@ -461,21 +478,20 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         }
 
         // ...and reinsert in recorded slot order, preserving relative order.
+        // A window adoption floated (a rule from a freshly reloaded config)
+        // stays floating even if the snapshot had it tiled — reload must keep
+        // applying new rules to already-managed windows.
         moves.Sort((a, b) => a.P.Order.CompareTo(b.P.Order));
-        foreach ((ManagedWindow win, int m, SavedPlacement p) in moves)
+        foreach ((ManagedWindow win, int m, SavedPlacement p, bool adoptedFloating) in moves)
         {
             Workspace ws = _monitors[m].Workspaces[p.Ws];
             win.NoAutoFloat = p.NoAutoFloat;
-            List<ManagedWindow> list = p.Tiled ? ws.Windows : ws.Floating;
+            List<ManagedWindow> list = p.Tiled && !adoptedFloating ? ws.Windows : ws.Floating;
             list.Insert(Math.Min(p.Order, list.Count), win);
         }
 
         foreach (MonitorCtx mc in _monitors)
         {
-            if (actives.TryGetValue(mc.Desc.Device, out int active))
-            {
-                mc.Active = active;
-            }
             if (focusSlots.TryGetValue(mc.Desc.Device, out int[]? slots))
             {
                 for (int wsIdx = 0; wsIdx < WorkspaceCount; wsIdx++)
@@ -506,6 +522,19 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         if (focusedDevice is not null && byDevice.TryGetValue(focusedDevice, out int fm))
         {
             _focusedMonitor = fm;
+        }
+
+        // The user may have been working in a window that belongs on a hidden
+        // workspace (everything was uncloaked during pause). Follow them there
+        // rather than cloaking the very window that holds foreground — input
+        // would keep flowing into an invisible window otherwise.
+        nint foreground = ForegroundHwnd();
+        if (foreground != 0
+            && _windowLoc.TryGetValue(foreground, out (int M, int W) fgLoc)
+            && fgLoc.W != _monitors[fgLoc.M].Active)
+        {
+            _monitors[fgLoc.M].Active = fgLoc.W;
+            _focusedMonitor = fgLoc.M;
         }
 
         // Everything is uncloaked right now — hide what belongs to inactive
@@ -589,6 +618,20 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                     break;
                 }
 
+                // Shell gestures (Aero Snap drag-to-top) maximize the window
+                // before MOVESIZEEND lands — never fold that into the layout,
+                // and drop WS_MAXIMIZE before tiling over it (positioning a
+                // maximized window desyncs its restore behavior).
+                if (IsZoomedWin(e.Hwnd))
+                {
+                    if (!dryRun)
+                    {
+                        RestoreWin(e.Hwnd);
+                    }
+                    Retile(loc.M);
+                    break;
+                }
+
                 // The pre-drag baseline: the real observed rect when the drag
                 // began, or the last requested rect if START was lost (the raw
                 // event channel drops oldest under pressure).
@@ -619,7 +662,11 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                         }
                     }
                 }
-                else if (LayoutResizer.ApplyEdgeDeltas(
+                // Folding deltas needs the real observed start rect: without
+                // it the baseline is Requested*, which min-size-clamped
+                // windows never occupy (and dry-run never writes) — a plain
+                // move would masquerade as a huge resize.
+                else if (haveStart && LayoutResizer.ApplyEdgeDeltas(
                     ws.Layout, _monitors[loc.M].EffectiveWorkArea, ws.Windows.Count, _config.Gap,
                     ws.BspRatios, ws.ColumnWeights, dragged,
                     dropped.X - before.X, dropped.Y - before.Y,
@@ -1052,6 +1099,29 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     private bool IsFloating((int M, int W) loc, nint hwnd)
         => _monitors[loc.M].Workspaces[loc.W].Floating.Exists(w => w.Hwnd == hwnd);
 
+    private void ProcessPendingRetiles()
+    {
+        if (_pendingRetiles.Count == 0 || _paused)
+        {
+            return;
+        }
+
+        long now = Environment.TickCount64;
+        for (int i = _pendingRetiles.Count - 1; i >= 0; i--)
+        {
+            (int monitor, long dueMs) = _pendingRetiles[i];
+            if (now < dueMs)
+            {
+                continue;
+            }
+            _pendingRetiles.RemoveAt(i);
+            if (monitor < _monitors.Count)
+            {
+                Retile(monitor);
+            }
+        }
+    }
+
     private void ProcessPendingNudges()
     {
         if (_pendingNudges.Count == 0)
@@ -1156,6 +1226,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         _monitors.Clear();
         _monitors.AddRange(rebuilt);
         _focusedMonitor = Math.Clamp(_focusedMonitor, 0, _monitors.Count - 1);
+        _pendingRetiles.Clear(); // monitor indices just changed
 
         // Monitor indices changed — rebuild the location map from the lists.
         _windowLoc.Clear();
@@ -1222,6 +1293,10 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     private static unsafe nint ForegroundHwnd() => (nint)PInvoke.GetForegroundWindow().Value;
 
     private static unsafe bool IsWindowAlive(nint hwnd) => PInvoke.IsWindow(new HWND(hwnd));
+
+    private static unsafe bool IsZoomedWin(nint hwnd) => PInvoke.IsZoomed(new HWND(hwnd));
+
+    private static unsafe void RestoreWin(nint hwnd) => PInvoke.ShowWindow(new HWND(hwnd), SHOW_WINDOW_CMD.SW_RESTORE);
 
     private static unsafe bool TryGetRect(nint hwnd, out RectI rect)
     {
@@ -1687,9 +1762,11 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 string[] parts = req.Arg?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? [];
                 Direction? dir = parts.Length is 1 or 2 ? DirectionParser.Parse(parts[0]) : null;
                 int step = _config.ResizeStep;
-                if (dir is null || (parts.Length == 2 && !int.TryParse(parts[1], out step)))
+                if (dir is null
+                    || (parts.Length == 2 && !int.TryParse(parts[1], out step))
+                    || step == 0 || step < -10_000 || step > 10_000)
                 {
-                    return new CommandReply(false, "usage: resize <left|right|up|down> [px]");
+                    return new CommandReply(false, "usage: resize <left|right|up|down> [px]  (px 1..10000, negative shrinks)");
                 }
 
                 MonitorCtx mc = _monitors[_focusedMonitor];
@@ -1883,6 +1960,14 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             sourceWs.FocusedIndex = Math.Max(0, sourceWs.Windows.Count - 1);
         }
 
+        // The moved window itself may be cloaked (a monocle sibling focused
+        // via directional focus) — it lands on the target's ACTIVE workspace,
+        // so make it visible, and do so before positioning (the Chromium rule).
+        if (_selfCloaked.Contains(win.Hwnd))
+        {
+            UncloakWin(win.Hwnd);
+        }
+
         // A window arriving on a monocled workspace ends the monocle, same as
         // a newly created one.
         ExitMonocle(ws2);
@@ -1890,14 +1975,14 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         ws2.Windows.Insert(insertAt, win);
         ws2.FocusedIndex = insertAt;
         _windowLoc[win.Hwnd] = (m2, mc2.Active);
-        win.PendingVerify = false;
         _focusedMonitor = m2;
 
         Retile(srcMonitor);
         Retile(m2);
-        // Second pass on the target: crossing a DPI boundary changes the
-        // window's DWM frame, so the first positioning lands slightly off.
-        Retile(m2);
+        // Crossing a DPI boundary changes the window's DWM frame, but the
+        // SetWindowPos is async — re-apply after it settles, when the frame
+        // margins can be queried against the new DPI.
+        _pendingRetiles.Add((m2, Environment.TickCount64 + 300));
         if (dryRun)
         {
             Log($"DRYRUN focus 0x{win.Hwnd:X8}");
