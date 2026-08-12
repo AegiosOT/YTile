@@ -41,6 +41,8 @@ Early development.
   weights), `ytile resize <dir> [px]` for keyboard resizing, `ytile retile` resets
 - [x] Cross-monitor focus/move: directional commands continue onto the adjacent
   monitor at the workspace edge
+- [x] Workspace assignments survive pause/resume and `ytile reload` (placement
+  snapshot + restore around the re-adoption pass)
 
 ## Building
 

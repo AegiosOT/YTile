@@ -307,15 +307,44 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         }
     }
 
+    /// <summary>Where a window lived before a resync, keyed by device so
+    /// monitor indices may change underneath it.</summary>
+    private readonly record struct SavedPlacement(string Device, int Ws, bool Tiled, int Order, bool NoAutoFloat);
+
     /// <summary>
     /// Drops all window state and rebuilds it from the OS, re-enumerating
     /// monitors too (docking/undocking may have happened while paused).
-    /// Everything lands on each monitor's active workspace; per-device layout
-    /// choices survive. All cloaked windows are restored first so the
-    /// adoption pass can see them.
+    /// Placements are snapshotted first and restored after the adoption pass,
+    /// so windows return to their workspaces instead of flattening onto each
+    /// monitor's active one; per-device layout choices survive too. All
+    /// cloaked windows are restored first so the adoption pass can see them.
     /// </summary>
     private void Resync()
     {
+        var placement = new Dictionary<nint, SavedPlacement>();
+        var actives = new Dictionary<string, int>();
+        var focusSlots = new Dictionary<string, int[]>();
+        string? focusedDevice = _monitors.Count > 0 ? _monitors[_focusedMonitor].Desc.Device : null;
+        foreach (MonitorCtx snap in _monitors)
+        {
+            actives[snap.Desc.Device] = snap.Active;
+            var slots = new int[WorkspaceCount];
+            for (int wsIdx = 0; wsIdx < WorkspaceCount; wsIdx++)
+            {
+                Workspace ws = snap.Workspaces[wsIdx];
+                slots[wsIdx] = ws.FocusedIndex;
+                for (int i = 0; i < ws.Windows.Count; i++)
+                {
+                    placement[ws.Windows[i].Hwnd] = new SavedPlacement(snap.Desc.Device, wsIdx, true, i, ws.Windows[i].NoAutoFloat);
+                }
+                for (int i = 0; i < ws.Floating.Count; i++)
+                {
+                    placement[ws.Floating[i].Hwnd] = new SavedPlacement(snap.Desc.Device, wsIdx, false, i, ws.Floating[i].NoAutoFloat);
+                }
+            }
+            focusSlots[snap.Desc.Device] = slots;
+        }
+
         UncloakAll();
 
         List<MonitorDesc> fresh = MonitorProbe.Enumerate();
@@ -378,7 +407,112 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         _focusedMonitor = 0;
         _windowLoc.Clear();
         Adopt();
+        RestorePlacements(placement, actives, focusSlots, focusedDevice);
         SeedFocusFromForeground();
+    }
+
+    /// <summary>
+    /// Moves every re-adopted window back to its snapshotted workspace and
+    /// slot. Windows from vanished monitors land on monitor 0, same workspace
+    /// index (mirrors hotplug rehoming); windows unknown to the snapshot stay
+    /// where adoption put them. Re-establishes active workspaces, focus
+    /// slots, and the hidden-iff-inactive cloak invariant.
+    /// </summary>
+    private void RestorePlacements(
+        Dictionary<nint, SavedPlacement> placement,
+        Dictionary<string, int> actives,
+        Dictionary<string, int[]> focusSlots,
+        string? focusedDevice)
+    {
+        if (placement.Count == 0)
+        {
+            return;
+        }
+
+        var byDevice = new Dictionary<string, int>();
+        for (int i = 0; i < _monitors.Count; i++)
+        {
+            byDevice[_monitors[i].Desc.Device] = i;
+        }
+
+        // Pull every known window out of wherever adoption put it...
+        var moves = new List<(ManagedWindow Win, int M, SavedPlacement P)>();
+        foreach (MonitorCtx mc in _monitors)
+        {
+            foreach (Workspace ws in mc.Workspaces)
+            {
+                for (int i = ws.Windows.Count - 1; i >= 0; i--)
+                {
+                    if (placement.TryGetValue(ws.Windows[i].Hwnd, out SavedPlacement p))
+                    {
+                        moves.Add((ws.Windows[i], byDevice.GetValueOrDefault(p.Device, 0), p));
+                        ws.Windows.RemoveAt(i);
+                    }
+                }
+                for (int i = ws.Floating.Count - 1; i >= 0; i--)
+                {
+                    if (placement.TryGetValue(ws.Floating[i].Hwnd, out SavedPlacement p))
+                    {
+                        moves.Add((ws.Floating[i], byDevice.GetValueOrDefault(p.Device, 0), p));
+                        ws.Floating.RemoveAt(i);
+                    }
+                }
+            }
+        }
+
+        // ...and reinsert in recorded slot order, preserving relative order.
+        moves.Sort((a, b) => a.P.Order.CompareTo(b.P.Order));
+        foreach ((ManagedWindow win, int m, SavedPlacement p) in moves)
+        {
+            Workspace ws = _monitors[m].Workspaces[p.Ws];
+            win.NoAutoFloat = p.NoAutoFloat;
+            List<ManagedWindow> list = p.Tiled ? ws.Windows : ws.Floating;
+            list.Insert(Math.Min(p.Order, list.Count), win);
+        }
+
+        foreach (MonitorCtx mc in _monitors)
+        {
+            if (actives.TryGetValue(mc.Desc.Device, out int active))
+            {
+                mc.Active = active;
+            }
+            if (focusSlots.TryGetValue(mc.Desc.Device, out int[]? slots))
+            {
+                for (int wsIdx = 0; wsIdx < WorkspaceCount; wsIdx++)
+                {
+                    Workspace ws = mc.Workspaces[wsIdx];
+                    ws.FocusedIndex = Math.Clamp(slots[wsIdx], 0, Math.Max(0, ws.Windows.Count - 1));
+                }
+            }
+        }
+
+        // Monitor and workspace indices moved — rebuild the location map.
+        _windowLoc.Clear();
+        for (int m = 0; m < _monitors.Count; m++)
+        {
+            for (int w = 0; w < WorkspaceCount; w++)
+            {
+                foreach (ManagedWindow win in _monitors[m].Workspaces[w].Windows)
+                {
+                    _windowLoc[win.Hwnd] = (m, w);
+                }
+                foreach (ManagedWindow win in _monitors[m].Workspaces[w].Floating)
+                {
+                    _windowLoc[win.Hwnd] = (m, w);
+                }
+            }
+        }
+
+        if (focusedDevice is not null && byDevice.TryGetValue(focusedDevice, out int fm))
+        {
+            _focusedMonitor = fm;
+        }
+
+        // Everything is uncloaked right now — hide what belongs to inactive
+        // workspaces again, and treat foreground bounces off that cloak batch
+        // as churn, not the user asking to follow.
+        NormalizeCloaks();
+        _cloakChurnUntilMs = Environment.TickCount64 + 1500;
     }
 
     private void HandleOsEvent(RawWinEvent e)
