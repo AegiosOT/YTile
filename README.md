@@ -35,20 +35,20 @@ edges through ([docs/YTILE-IPC.md](docs/YTILE-IPC.md)).
 ## Install
 
 ```powershell
-irm https://raw.githubusercontent.com/AltimG/YTile/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/JKUSAS/YTile/main/scripts/install.ps1 | iex
 ```
 
 Or via winget:
 
 ```powershell
-winget install AltimG.YTile
+winget install JKUSAS.YTile
 ```
 
 Each release is submitted to [winget-pkgs](https://github.com/microsoft/winget-pkgs),
 so winget can lag a few days behind while the submission is moderated; the
 install script always serves the latest release immediately. Pick one channel —
 a copy from each ends up shadowing the other on your PATH (both installers warn
-about this; remove one with `winget uninstall AltimG.YTile` or
+about this; remove one with `winget uninstall JKUSAS.YTile` or
 `$env:YTILE_UNINSTALL = 1` + the script).
 
 Downloads the latest release into `%LOCALAPPDATA%\Programs\ytile`, adds it to

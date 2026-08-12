@@ -9,7 +9,7 @@
     profile.
 
     Run directly:
-        irm https://raw.githubusercontent.com/AltimG/YTile/main/scripts/install.ps1 | iex
+        irm https://raw.githubusercontent.com/JKUSAS/YTile/main/scripts/install.ps1 | iex
 
     Options are read from environment variables, since a piped script takes no
     parameters:
@@ -24,7 +24,7 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Repo       = 'AltimG/YTile'
+$Repo       = 'JKUSAS/YTile'
 $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\ytile'
 $ConfigDir  = Join-Path $env:USERPROFILE '.config\ytile'
 $ConfigPath = Join-Path $ConfigDir 'ytile.json'
@@ -36,8 +36,10 @@ function Write-Step($msg) { Write-Host "  $msg" }
 function Write-Head($msg) { Write-Host ''; Write-Host $msg -ForegroundColor Cyan }
 
 function Stop-YTile {
-    $proc = Get-Process ytiled -ErrorAction SilentlyContinue
-    if (-not $proc) { return }
+    # @(): two daemons can coexist (another session, --debug-events), and member
+    # enumeration over an array makes `-not $procs.HasExited` always false.
+    $procs = @(Get-Process ytiled -ErrorAction SilentlyContinue)
+    if (-not $procs) { return }
     Write-Step 'stopping the running daemon (its exe is locked while it runs)'
     # The daemon may have been installed by winget rather than this script, so
     # fall back to whatever `ytile` resolves to on PATH - the stop goes over a
@@ -52,39 +54,73 @@ function Stop-YTile {
         # because under EAP=Stop, Windows PowerShell 5.1 turns any stderr line
         # of a redirected native command into a terminating NativeCommandError.
         try { & $cli stop 2>$null | Out-Null } catch {}
-        for ($i = 0; $i -lt 20 -and -not $proc.HasExited; $i++) { Start-Sleep -Milliseconds 150; $proc.Refresh() }
+        for ($i = 0; $i -lt 20 -and @($procs | Where-Object { -not $_.HasExited }).Count; $i++) {
+            Start-Sleep -Milliseconds 150
+            foreach ($p in $procs) { $p.Refresh() }
+        }
     }
-    if (-not $proc.HasExited) {
+    $alive = @($procs | Where-Object { -not $_.HasExited })
+    if ($alive) {
         # SilentlyContinue: the graceful stop may land between the poll and here.
-        Stop-Process -Id $proc.Id -Force -Confirm:$false -ErrorAction SilentlyContinue
+        $alive | Stop-Process -Force -Confirm:$false -ErrorAction SilentlyContinue
         Start-Sleep -Milliseconds 300
     }
 }
 
-# winget installs YTile too (AltimG.YTile); a copy from each channel on PATH is
+# winget installs YTile too (JKUSAS.YTile); a copy from each channel on PATH is
 # a recipe for running a stale binary and thinking it's upgraded.
 function Test-WingetCopy {
     Test-Path (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\ytile.exe')
 }
 
+# The user PATH is usually REG_EXPAND_SZ; [Environment]::SetEnvironmentVariable
+# reads it expanded and writes it back as REG_SZ, freezing entries other
+# installers left as %JAVA_HOME%\bin etc. Go through the registry raw instead.
+function Get-UserPathRaw {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+    if (-not $key) { return '' }
+    try { return [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
+    finally { $key.Close() }
+}
+
+function Set-UserPathRaw($value) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    try {
+        $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+        if ($key.GetValueNames() -contains 'Path') { $kind = $key.GetValueKind('Path') }
+        $key.SetValue('Path', $value, $kind)
+    } finally { $key.Close() }
+    # A raw registry write skips the WM_SETTINGCHANGE broadcast that
+    # [Environment]::SetEnvironmentVariable does; without it Explorer never
+    # rereads the key and new terminals keep the old PATH until relogin.
+    if (-not ('YTile.Native' -as [type])) {
+        Add-Type -Namespace YTile -Name Native -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@
+    }
+    $result = [UIntPtr]::Zero
+    # HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG
+    [void][YTile.Native]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
+}
+
 function Add-ToUserPath($dir) {
-    $current = [Environment]::GetEnvironmentVariable('PATH', 'User')
+    $current = Get-UserPathRaw
     $entries = @()
-    if ($current) { $entries = $current -split ';' | Where-Object { $_ } }
+    if ($current) { $entries = @($current -split ';' | Where-Object { $_ }) }
     if ($entries -contains $dir) {
         Write-Step "PATH already contains $dir"
         return
     }
-    [Environment]::SetEnvironmentVariable('PATH', (@($entries) + $dir) -join ';', 'User')
+    Set-UserPathRaw ((@($entries) + $dir) -join ';')
     Write-Step "added $dir to your user PATH"
     Write-Host '    (open a new terminal for this to take effect elsewhere)' -ForegroundColor DarkGray
 }
 
 function Remove-FromUserPath($dir) {
-    $current = [Environment]::GetEnvironmentVariable('PATH', 'User')
-    if (-not $current) { return }
-    $kept = $current -split ';' | Where-Object { $_ -and $_ -ne $dir }
-    [Environment]::SetEnvironmentVariable('PATH', ($kept -join ';'), 'User')
+    $entries = @((Get-UserPathRaw) -split ';' | Where-Object { $_ })
+    if ($entries -notcontains $dir) { return }
+    Set-UserPathRaw (($entries | Where-Object { $_ -ne $dir }) -join ';')
     Write-Step "removed $dir from your user PATH"
 }
 
@@ -109,11 +145,14 @@ if ($env:YTILE_UNINSTALL) {
     Write-Host ''
     Write-Host 'YTile removed.' -ForegroundColor Green
     if (Test-WingetCopy) {
-        Write-Host 'A winget-installed copy of YTile is still present - remove it with: winget uninstall AltimG.YTile' -ForegroundColor Yellow
+        Write-Host 'A winget-installed copy of YTile is still present - remove it with: winget uninstall JKUSAS.YTile' -ForegroundColor Yellow
     }
     if (Test-Path $ConfigPath) {
         Write-Host "Your config was left alone at $ConfigPath - delete it by hand if you want it gone." -ForegroundColor DarkGray
     }
+    # A lingering flag would turn the next install one-liner pasted into this
+    # window into another uninstall.
+    Remove-Item Env:YTILE_UNINSTALL -ErrorAction SilentlyContinue
     return
 }
 
@@ -142,12 +181,20 @@ try {
 Write-Step "release $($release.tag_name)"
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+# An upgrade has to stop the daemon to overwrite its exe; remember to bring it
+# back afterwards, or the one-liner upgrade leaves the user without tiling.
+$wasRunning = [bool](Get-Process ytiled -ErrorAction SilentlyContinue)
 Stop-YTile
 
 # Download to a temp dir first so a failed download cannot leave a half-installed
 # directory behind.
 $staging = Join-Path ([IO.Path]::GetTempPath()) ("ytile-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
+# Windows PowerShell 5.1 redraws the progress bar per buffer, slowing multi-MB
+# downloads by an order of magnitude; iex shares the caller's scope, so save
+# and restore instead of leaking the preference into their session.
+$oldProgressPreference = $ProgressPreference
+$ProgressPreference = 'SilentlyContinue'
 try {
     foreach ($name in $Binaries) {
         $asset = $release.assets | Where-Object { $_.name -eq $name } | Select-Object -First 1
@@ -182,6 +229,7 @@ try {
     }
     Write-Step "installed to $InstallDir"
 } finally {
+    $ProgressPreference = $oldProgressPreference
     Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue -Confirm:$false
 }
 
@@ -193,7 +241,7 @@ if (Test-WingetCopy) {
     Write-Host ''
     Write-Host 'Note: a winget-installed copy of YTile also exists. Whichever PATH entry was' -ForegroundColor Yellow
     Write-Host 'added first wins in new terminals, so `ytile` may keep running the winget copy.' -ForegroundColor Yellow
-    Write-Host 'Pick one channel: winget uninstall AltimG.YTile   (or uninstall this copy instead)' -ForegroundColor Yellow
+    Write-Host 'Pick one channel: winget uninstall JKUSAS.YTile   (or uninstall this copy instead)' -ForegroundColor Yellow
 }
 
 if (-not (Test-Path $ConfigPath)) {
@@ -220,7 +268,7 @@ if ($env:YTILE_AUTOSTART) {
     & (Join-Path $InstallDir 'ytile.exe') autostart on
 }
 
-if ($env:YTILE_START) {
+if ($env:YTILE_START -or $wasRunning) {
     & (Join-Path $InstallDir 'ytile.exe') start
 }
 
@@ -233,4 +281,4 @@ Write-Host '  ytile state            show monitors, workspaces and windows'
 Write-Host '  ytile --help           all commands'
 Write-Host ''
 Write-Host 'Hotkeys need whkd (https://github.com/LGUG2Z/whkd); see examples/whkdrc-ytile.' -ForegroundColor DarkGray
-Write-Host 'Uninstall: $env:YTILE_UNINSTALL=1; irm https://raw.githubusercontent.com/AltimG/YTile/main/scripts/install.ps1 | iex' -ForegroundColor DarkGray
+Write-Host 'Uninstall: $env:YTILE_UNINSTALL=1; irm https://raw.githubusercontent.com/JKUSAS/YTile/main/scripts/install.ps1 | iex' -ForegroundColor DarkGray

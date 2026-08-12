@@ -1,16 +1,16 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
 # Template — scripts/winget-manifests.ps1 fills the placeholders at release time.
-PackageIdentifier: AltimG.YTile
+PackageIdentifier: JKUSAS.YTile
 PackageVersion: {{VERSION}}
 PackageLocale: en-US
-Publisher: AltimG
-PublisherUrl: https://github.com/AltimG
-PublisherSupportUrl: https://github.com/AltimG/YTile/issues
-Author: AltimG
+Publisher: JKUSAS
+PublisherUrl: https://github.com/JKUSAS
+PublisherSupportUrl: https://github.com/JKUSAS/YTile/issues
+Author: JKUSAS
 PackageName: YTile
-PackageUrl: https://github.com/AltimG/YTile
+PackageUrl: https://github.com/JKUSAS/YTile
 License: GPL-3.0
-LicenseUrl: https://github.com/AltimG/YTile/blob/main/LICENSE
+LicenseUrl: https://github.com/JKUSAS/YTile/blob/main/LICENSE
 ShortDescription: Tiling window manager for Windows
 Description: |-
   YTile tiles application windows automatically: nine workspaces per monitor
@@ -26,6 +26,6 @@ Tags:
 - tiling-window-manager
 - window-manager
 - productivity
-ReleaseNotesUrl: https://github.com/AltimG/YTile/releases/tag/v{{VERSION}}
+ReleaseNotesUrl: https://github.com/JKUSAS/YTile/releases/tag/v{{VERSION}}
 ManifestType: defaultLocale
 ManifestVersion: 1.10.0

@@ -94,6 +94,9 @@ jobs:
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $env:TAG @assets --clobber
+            # A cancelled create can orphan a DRAFT release, which `view` still
+            # finds; drafts serve no assets and hide from /releases/latest.
+            gh release edit $env:TAG --draft=false
           } else {
             gh release create $env:TAG @assets --title "YTile $env:TAG" --generate-notes
           }

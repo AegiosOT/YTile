@@ -17,9 +17,26 @@
    `scripts/install.ps1` serves users from that release immediately.
 4. Submit the release's winget manifests to
    [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs): download
-   the three `AltimG.YTile*.yaml` assets into
-   `manifests/a/AltimG/YTile/X.Y.Z/` in a fork and open a PR.
-   (`wingetcreate update AltimG.YTile --version X.Y.Z --urls <zip-url>` also
+   the three `JKUSAS.YTile*.yaml` assets into
+   `manifests/j/JKUSAS/YTile/X.Y.Z/` in a fork and open a PR.
+   (`wingetcreate update JKUSAS.YTile --version X.Y.Z --urls <zip-url>` also
    works, but only from the second release onward — `update` requires the
    package to already exist in winget-pkgs.)
-   `winget install AltimG.YTile` picks the version up once the PR is merged.
+   `winget install JKUSAS.YTile` picks the version up once the PR is merged.
+
+## Re-cutting a tag
+
+If a tag has to be re-pointed (say the release run was cancelled and the fix
+landed after tagging), move it explicitly — `git push origin main vX.Y.Z`
+happily re-pushes the stale local tag, and the workflow builds whatever the
+tag points at:
+
+```
+git tag -f vX.Y.Z
+git push origin :refs/tags/vX.Y.Z
+git push origin vX.Y.Z
+```
+
+Verify with `git rev-parse vX.Y.Z` == `git rev-parse HEAD` before pushing.
+Only do this while nothing has shipped from the tag; a published release's
+tag never moves.
