@@ -17,8 +17,9 @@ Connect, write one line, read one line, disconnect:
 < {"ok":true,"message":"workspace 2"}
 ```
 
-Verbs: `version, state, pause, resume, retile, stop, float,
-layout <bsp|columns>, focus <dir>, move <dir>, workspace <1-9>, send <1-9>,
+Verbs: `version, state, pause, resume, retile, reload, stop, float, monocle,
+layout <bsp|columns>, focus <dir>, move <dir>, resize <dir> [px],
+workspace <1-9>, send <1-9>,
 reserve <monitor> <left> <top> <right> <bottom>` (multi-token args are one
 space-joined `arg` string). Errors: `{"ok":false,"error":"..."}`.
 The server enforces a 5 s read deadline per connection; up to 8 concurrent
@@ -34,7 +35,15 @@ followed by a stream — one line per state change, connection stays open:
 ```
 
 Event names: `ready, manage, unmanage, focus_change, workspace_change,
-layout_change, float_change, move, retile, reserve, pause, resume`.
+layout_change, monocle, float_change, move, resize, retile, reserve, reload,
+pause, resume, monitors_change`.
+
+**`ready` is not once-per-daemon.** It is emitted at startup *and* again
+whenever a new subscriber attaches, so a bar that starts late — or reconnects
+after the daemon restarted — still gets the cue to re-apply its `reserve`
+(reservations do not survive a restart). Treat `ready` as "re-assert your
+setup now", make that handler idempotent, and expect to receive it when
+another subscriber joins.
 Every notification carries the **full state snapshot** (komorebi-style — no
 delta tracking needed). A write failure drops the subscriber; reconnect by
 re-subscribing. `ytile subscribe` prints this stream to stdout.

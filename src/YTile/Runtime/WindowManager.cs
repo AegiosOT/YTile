@@ -204,6 +204,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                             break;
                         case WmMessage.ReaperTick:
                             ClearStaleDrag();
+                            AnnounceReadyOnNewSubscriber();
                             ReassertTaskbarPolicy();
                             ReapDeadWindows();
                             VerifyCellFits();
@@ -273,6 +274,26 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     // that still believes it owns the full screen. Polled rather than
     // event-driven because the shell offers no notification we can hook.
     private long _taskbarCheckDueMs;
+
+    // `ready` is published once, at startup. A bar that starts later — or
+    // reconnects after the daemon restarts — attaches after that and never
+    // hears it, so it never learns to re-apply its work-area reservation
+    // (reservations deliberately do not survive a restart). The result is
+    // windows tiling underneath the bar. Re-announce to everyone whenever the
+    // roster grows; re-reserving is idempotent, so existing subscribers can
+    // safely act on it too.
+    private int _lastAttachGeneration;
+
+    private void AnnounceReadyOnNewSubscriber()
+    {
+        int generation = events.AttachGeneration;
+        if (generation == _lastAttachGeneration)
+        {
+            return;
+        }
+        _lastAttachGeneration = generation;
+        PublishEvent("ready");
+    }
 
     private void ReassertTaskbarPolicy()
     {

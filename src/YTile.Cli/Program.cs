@@ -115,6 +115,12 @@ internal static class Program
             FileName = File.Exists(sibling) ? sibling : "ytiled.exe",
             UseShellExecute = false,
             CreateNoWindow = true,
+            // Without this the daemon inherits our stdout/stderr handles and
+            // holds them for its whole life, so anything that captures or pipes
+            // `ytile start` blocks until the daemon exits. Nothing is lost:
+            // --log sends the daemon's output to a file.
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
         };
         psi.ArgumentList.Add("--log");
         foreach (string a in extraArgs)

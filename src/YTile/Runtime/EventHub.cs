@@ -16,9 +16,16 @@ internal sealed class EventHub
     private readonly List<(NamedPipeServerStream Pipe, StreamWriter Writer)> _subscribers = [];
     private readonly Lock _lock = new();
     private int _count;
+    private int _attachGeneration;
 
     /// <summary>Cheap check so the actor skips building state with nobody listening.</summary>
     public bool HasSubscribers => Volatile.Read(ref _count) > 0;
+
+    /// <summary>
+    /// Bumped on every attach and never reset, so the actor can tell "someone
+    /// new joined" from "one left and one joined" — a plain count cannot.
+    /// </summary>
+    public int AttachGeneration => Volatile.Read(ref _attachGeneration);
 
     /// <summary>Takes ownership of the connection; it stays open until a write fails.</summary>
     public void Attach(NamedPipeServerStream pipe, StreamWriter writer)
@@ -28,6 +35,7 @@ internal sealed class EventHub
             _subscribers.Add((pipe, writer));
         }
         Interlocked.Increment(ref _count);
+        Interlocked.Increment(ref _attachGeneration);
         Log("subscriber attached");
     }
 
