@@ -20,6 +20,22 @@ internal static class Program
             return 0;
         }
 
+        // --log: headless mode (`ytile start` / autostart) — everything the
+        // daemon would print goes to a file instead of the hidden console.
+        // Truncates per session; FileShare.Read lets `ytile`/editors tail it.
+        if (args.Contains("--log"))
+        {
+            string logDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ytile");
+            Directory.CreateDirectory(logDir);
+            var log = new StreamWriter(new FileStream(
+                Path.Combine(logDir, "ytiled.log"),
+                FileMode.Create, FileAccess.Write, FileShare.Read))
+            { AutoFlush = true };
+            Console.SetOut(log);
+            Console.SetError(log);
+        }
+
         // Physical-pixel window rects on mixed-DPI setups.
         PInvoke.SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 

@@ -43,21 +43,26 @@ Early development.
   monitor at the workspace edge
 - [x] Workspace assignments survive pause/resume and `ytile reload` (placement
   snapshot + restore around the re-adoption pass)
+- [x] Packaging: `scripts/publish.ps1`, `ytile start` (background daemon, file log),
+  `ytile autostart on|off|status` (HKCU Run entry)
 
 ## Building
 
 Requires the .NET 10 SDK.
 
 ```
-dotnet build                                          # dev build (JIT)
-dotnet publish src/YTile -r win-x64 -c Release        # NativeAOT daemon  -> ytiled.exe
-dotnet publish src/YTile.Cli -r win-x64 -c Release    # NativeAOT CLI     -> ytile.exe
+dotnet build                # dev build (JIT)
+pwsh scripts/publish.ps1    # NativeAOT ytiled.exe + ytile.exe -> publish/
 ```
 
 ## Running
 
 ```
-ytiled                   # start the daemon (auto-pauses if komorebi.exe is running)
+ytile start              # launch ytiled in the background
+                         #   (logs to %LOCALAPPDATA%\ytile\ytiled.log)
+ytile autostart on       # launch it at every login (ytile autostart off|status)
+
+ytiled                   # or run it in the foreground (auto-pauses if komorebi.exe is running)
 ytiled --dry-run         # log every SetWindowPos/focus instead of applying it
 ytiled --force           # manage even while komorebi is running (they will fight)
 ytiled --debug-events    # watch the window-event stream with tiling verdicts

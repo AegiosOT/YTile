@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text.Json;
+using Microsoft.Win32;
 using YTile.Protocol;
 
 namespace YTile.Cli;
@@ -31,6 +33,10 @@ internal static class Program
                 break;
             case "subscribe":
                 return Subscribe();
+            case "start":
+                return Start(args[1..]);
+            case "autostart":
+                return Autostart(args.Length > 1 ? args[1] : null);
             case "layout" or "focus" or "move" or "workspace" or "send" or "resize" when arg is not null:
                 break;
             case "reserve" when args.Length == 6:
@@ -78,6 +84,118 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    private static readonly string LogPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ytile", "ytiled.log");
+
+    /// <summary>Launches ytiled.exe detached with no visible console, logging to
+    /// %LOCALAPPDATA%\ytile\ytiled.log, and waits for its IPC pipe to appear.</summary>
+    private static int Start(string[] extraArgs)
+    {
+        foreach (string a in extraArgs)
+        {
+            if (a is not ("--force" or "--dry-run"))
+            {
+                Console.Error.WriteLine("usage: ytile start [--force] [--dry-run]");
+                return 2;
+            }
+        }
+
+        if (File.Exists(@"\\.\pipe\ytile"))
+        {
+            Console.Error.WriteLine("ytile: ytiled is already running.");
+            return 1;
+        }
+
+        // Prefer the daemon that ships next to this CLI; fall back to PATH.
+        string sibling = Path.Combine(AppContext.BaseDirectory, "ytiled.exe");
+        var psi = new ProcessStartInfo
+        {
+            FileName = File.Exists(sibling) ? sibling : "ytiled.exe",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("--log");
+        foreach (string a in extraArgs)
+        {
+            psi.ArgumentList.Add(a);
+        }
+
+        Process proc;
+        try
+        {
+            proc = Process.Start(psi)!;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"ytile: cannot start ytiled — {ex.Message}");
+            return 1;
+        }
+
+        // Give it a moment to take the single-instance lock and open the pipe.
+        for (int i = 0; i < 20; i++)
+        {
+            Thread.Sleep(100);
+            if (proc.HasExited)
+            {
+                Console.Error.WriteLine($"ytile: ytiled exited immediately (code {proc.ExitCode}) — see {LogPath}");
+                return 1;
+            }
+            if (File.Exists(@"\\.\pipe\ytile"))
+            {
+                Console.WriteLine($"ytiled started (pid {proc.Id}), logging to {LogPath}");
+                return 0;
+            }
+        }
+
+        Console.WriteLine($"ytiled launched (pid {proc.Id}) but its pipe hasn't appeared yet — check {LogPath}");
+        return 0;
+    }
+
+    private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string RunValueName = "YTile";
+
+    /// <summary>Manages the HKCU Run entry that launches `ytile start` at login.
+    /// The daemon still auto-pauses if komorebi is running, so an enabled entry
+    /// is safe even while another tiler owns the desktop.</summary>
+    private static int Autostart(string? arg)
+    {
+        switch (arg)
+        {
+            case "on" or "enable":
+            {
+                string self = Environment.ProcessPath
+                    ?? Path.Combine(AppContext.BaseDirectory, "ytile.exe");
+                using RegistryKey key = Registry.CurrentUser.CreateSubKey(RunKeyPath);
+                key.SetValue(RunValueName, $"\"{self}\" start");
+                Console.WriteLine($"autostart on: \"{self}\" start");
+                return 0;
+            }
+            case "off" or "disable":
+            {
+                using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
+                if (key?.GetValue(RunValueName) is null)
+                {
+                    Console.WriteLine("autostart was already off.");
+                    return 0;
+                }
+                key.DeleteValue(RunValueName);
+                Console.WriteLine("autostart off.");
+                return 0;
+            }
+            case "status" or null:
+            {
+                using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RunKeyPath);
+                Console.WriteLine(key?.GetValue(RunValueName) is string s
+                    ? $"autostart: on — {s}"
+                    : "autostart: off");
+                return 0;
+            }
+            default:
+                Console.Error.WriteLine("usage: ytile autostart <on|off|status>");
+                return 2;
+        }
     }
 
     /// <summary>Streams daemon notifications (one JSON per line) to stdout until
@@ -211,6 +329,9 @@ internal static class Program
 
             usage: ytile <command>
 
+              start [--force] [--dry-run]  launch ytiled in the background
+                                        (logs to %LOCALAPPDATA%\ytile\ytiled.log)
+              autostart <on|off|status>  run 'ytile start' automatically at login
               state                     show monitors, workspaces, and windows
               focus <left|right|up|down>   focus that way (crosses monitors at the edge)
               move  <left|right|up|down>   swap focused window that way (crosses monitors)
