@@ -212,8 +212,8 @@ internal static class Program
             usage: ytile <command>
 
               state                     show monitors, workspaces, and windows
-              focus <left|right|up|down>   focus the window in that direction
-              move  <left|right|up|down>   swap focused window in that direction
+              focus <left|right|up|down>   focus that way (crosses monitors at the edge)
+              move  <left|right|up|down>   swap focused window that way (crosses monitors)
               resize <left|right|up|down> [px]  grow the focused window that way (negative px shrinks)
               workspace <1-9>           switch the focused monitor's workspace
               send <1-9>                send the focused window to a workspace

@@ -39,6 +39,8 @@ Early development.
 - [x] Drag-to-swap (drop a window on another cell), monocle (`ytile monocle`)
 - [x] Resize deltas: edge-drags persist into the layout (BSP split ratios / column
   weights), `ytile resize <dir> [px]` for keyboard resizing, `ytile retile` resets
+- [x] Cross-monitor focus/move: directional commands continue onto the adjacent
+  monitor at the workspace edge
 
 ## Building
 

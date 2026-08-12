@@ -1515,7 +1515,9 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 int target = DirectionalTarget(ws, dir.Value);
                 if (target < 0)
                 {
-                    return new CommandReply(false, $"no window {req.Arg} of focused");
+                    // Nothing further this way on the workspace — cross to the
+                    // adjacent monitor if there is one.
+                    return CrossMonitor(req, dir.Value, ws);
                 }
 
                 if (req.Cmd == "focus")
@@ -1664,6 +1666,183 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         Log($"send 0x{target:X8} -> workspace {number}");
         PublishEvent("workspace_change");
         return new CommandReply(true, Message: $"sent 0x{target:X8} to workspace {number}");
+    }
+
+    /// <summary>
+    /// Directional focus/move that ran off the monitor's edge: land on the
+    /// adjacent monitor in that direction. Focus goes to the edge-most window
+    /// of its active workspace (entering from the left lands leftmost, etc.);
+    /// move transfers the focused window there, inserted at the entry edge.
+    /// </summary>
+    private CommandReply CrossMonitor(CommandRequest req, Direction dir, Workspace sourceWs)
+    {
+        int m2 = MonitorInDirection(_focusedMonitor, dir);
+        if (m2 < 0)
+        {
+            return new CommandReply(false, $"no window or monitor {req.Arg} of focused");
+        }
+
+        MonitorCtx mc2 = _monitors[m2];
+        Workspace ws2 = mc2.ActiveWs;
+
+        if (req.Cmd == "focus")
+        {
+            nint hwnd;
+            if (ws2.MonocleHwnd != 0)
+            {
+                // Everything but the monocle window is cloaked over there.
+                hwnd = ws2.MonocleHwnd;
+                ws2.FocusedIndex = Math.Max(0, ws2.Windows.FindIndex(w => w.Hwnd == hwnd));
+            }
+            else
+            {
+                int idx = EdgeWindow(ws2, dir);
+                if (idx >= 0)
+                {
+                    ws2.FocusedIndex = idx;
+                }
+                hwnd = idx >= 0 ? ws2.Windows[idx].Hwnd
+                    : ws2.Floating.Count > 0 ? ws2.Floating[^1].Hwnd : 0;
+            }
+
+            _focusedMonitor = m2;
+            if (hwnd == 0)
+            {
+                // An empty monitor is still a valid focus target — park
+                // foreground on the desktop so later commands land here.
+                ClearBorder();
+                if (!dryRun)
+                {
+                    FocusControl.FocusDesktop();
+                }
+                PublishEvent("focus_change");
+                return new CommandReply(true, Message: $"focused monitor {m2} (empty)");
+            }
+
+            if (dryRun)
+            {
+                Log($"DRYRUN focus 0x{hwnd:X8}");
+            }
+            else
+            {
+                FocusControl.Focus(hwnd);
+            }
+            return new CommandReply(true, Message: $"focus 0x{hwnd:X8} (monitor {m2})");
+        }
+
+        // move: transfer the focused window to the adjacent monitor.
+        ManagedWindow? win = sourceWs.Focused;
+        if (win is null)
+        {
+            return new CommandReply(false, "no tiled window focused");
+        }
+
+        int srcMonitor = _focusedMonitor;
+        if (sourceWs.MonocleHwnd == win.Hwnd)
+        {
+            // The monocle window is leaving — restore its hidden siblings.
+            ExitMonocle(sourceWs);
+        }
+        sourceWs.Windows.RemoveAt(sourceWs.FocusedIndex);
+        if (sourceWs.FocusedIndex >= sourceWs.Windows.Count)
+        {
+            sourceWs.FocusedIndex = Math.Max(0, sourceWs.Windows.Count - 1);
+        }
+
+        // A window arriving on a monocled workspace ends the monocle, same as
+        // a newly created one.
+        ExitMonocle(ws2);
+        int insertAt = dir is Direction.Right or Direction.Down ? 0 : ws2.Windows.Count;
+        ws2.Windows.Insert(insertAt, win);
+        ws2.FocusedIndex = insertAt;
+        _windowLoc[win.Hwnd] = (m2, mc2.Active);
+        win.PendingVerify = false;
+        _focusedMonitor = m2;
+
+        Retile(srcMonitor);
+        Retile(m2);
+        // Second pass on the target: crossing a DPI boundary changes the
+        // window's DWM frame, so the first positioning lands slightly off.
+        Retile(m2);
+        if (dryRun)
+        {
+            Log($"DRYRUN focus 0x{win.Hwnd:X8}");
+        }
+        else
+        {
+            FocusControl.Focus(win.Hwnd);
+        }
+        Log($"move 0x{win.Hwnd:X8} -> monitor {m2} ws {mc2.Active + 1}");
+        PublishEvent("move");
+        return new CommandReply(true, Message: $"moved to monitor {m2}");
+    }
+
+    /// <summary>Nearest other monitor whose center lies in the given direction.</summary>
+    private int MonitorInDirection(int from, Direction dir)
+    {
+        RectI a = _monitors[from].Desc.WorkArea;
+        int best = -1;
+        long bestDist = long.MaxValue;
+        for (int i = 0; i < _monitors.Count; i++)
+        {
+            if (i == from)
+            {
+                continue;
+            }
+
+            RectI b = _monitors[i].Desc.WorkArea;
+            int dx = b.CenterX - a.CenterX;
+            int dy = b.CenterY - a.CenterY;
+            bool inDirection = dir switch
+            {
+                Direction.Left => dx < 0 && Math.Abs(dx) >= Math.Abs(dy),
+                Direction.Right => dx > 0 && Math.Abs(dx) >= Math.Abs(dy),
+                Direction.Up => dy < 0 && Math.Abs(dy) >= Math.Abs(dx),
+                Direction.Down => dy > 0 && Math.Abs(dy) >= Math.Abs(dx),
+                _ => false,
+            };
+            if (!inDirection)
+            {
+                continue;
+            }
+
+            long dist = (long)dx * dx + (long)dy * dy;
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                best = i;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>
+    /// The window nearest the edge you enter through: moving right lands on
+    /// the leftmost window, moving up lands on the bottommost, and so on.
+    /// </summary>
+    private static int EdgeWindow(Workspace ws, Direction entering)
+    {
+        int best = -1;
+        int bestVal = int.MaxValue;
+        for (int i = 0; i < ws.Windows.Count; i++)
+        {
+            RectI r = ws.Windows[i].LastRect;
+            int val = entering switch
+            {
+                Direction.Right => r.CenterX,
+                Direction.Left => -r.CenterX,
+                Direction.Down => r.CenterY,
+                _ => -r.CenterY,
+            };
+            if (val < bestVal)
+            {
+                bestVal = val;
+                best = i;
+            }
+        }
+
+        return best;
     }
 
     /// <summary>Nearest window whose center lies in the given direction.</summary>
