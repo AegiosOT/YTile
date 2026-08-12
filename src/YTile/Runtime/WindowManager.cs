@@ -172,9 +172,11 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
 
     public async Task RunAsync(ChannelReader<WmMessage> reader, CancellationToken ct)
     {
-        Bootstrap();
+        // Bootstrap inside the try: it hides the taskbar, so a throw from here
+        // on must still reach the restore in the finally.
         try
         {
+            Bootstrap();
             await foreach (WmMessage msg in reader.ReadAllAsync(ct))
             {
                 try
@@ -202,6 +204,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                             break;
                         case WmMessage.ReaperTick:
                             ClearStaleDrag();
+                            ReassertTaskbarPolicy();
                             ReapDeadWindows();
                             VerifyCellFits();
                             CheckDisplayChange();
@@ -232,11 +235,14 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         catch (OperationCanceledException)
         {
         }
-
-        // Never exit leaving windows invisible — or the user without a taskbar.
-        UncloakAll();
-        ClearBorder();
-        ApplyTaskbarPolicy(managing: false);
+        finally
+        {
+            // Never exit leaving windows invisible — or the user without a
+            // taskbar. In a finally so an unexpected throw cannot skip it.
+            UncloakAll();
+            ClearBorder();
+            ApplyTaskbarPolicy(managing: false);
+        }
     }
 
     /// <summary>
@@ -252,16 +258,55 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             TaskbarControl.SetHidden(hide);
         }
 
-        // Tile over the reclaimed strip only while it is genuinely gone.
+        // Tile over the reclaimed strip only while it is genuinely gone:
+        // TaskbarControl.Hidden reflects what the shell actually reported, so a
+        // hide that found no tray window leaves the work area alone instead of
+        // tiling windows underneath a bar that is still on screen.
         foreach (MonitorCtx mc in _monitors)
         {
-            mc.UseFullBounds = hide;
+            mc.UseFullBounds = TaskbarControl.Hidden;
+        }
+    }
+
+    // An explorer.exe restart recreates every tray window, visible, and tells
+    // nobody. Without a re-assert the taskbar comes back on top of a layout
+    // that still believes it owns the full screen. Polled rather than
+    // event-driven because the shell offers no notification we can hook.
+    private long _taskbarCheckDueMs;
+
+    private void ReassertTaskbarPolicy()
+    {
+        if (_paused || dryRun || !_config.HideTaskbar)
+        {
+            return;
+        }
+
+        long now = Environment.TickCount64;
+        if (now < _taskbarCheckDueMs)
+        {
+            return;
+        }
+        _taskbarCheckDueMs = now + 2000;
+
+        if (TaskbarControl.AnyBarVisible())
+        {
+            Log("taskbar reappeared (shell restart?) — hiding it again");
+            ApplyTaskbarPolicy(managing: true);
+            RetileAll();
         }
     }
 
     private void Bootstrap()
     {
         CloakControl.Init();
+
+        // Crash insurance, before anything else: a previous instance killed
+        // outright never ran its restore path, and nothing else on the system
+        // will ever un-hide the tray window.
+        if (TaskbarControl.RecoverFromCrash())
+        {
+            Log("restored a taskbar left hidden by a previous instance");
+        }
 
         // Crash insurance: restore anything a dead ytiled left cloaked.
         List<nint>? unrecovered = null;
@@ -1604,10 +1649,15 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             case "reload":
             {
                 _config = YTileConfig.Load(null, out string? configError);
-                ApplyTaskbarPolicy(managing: !_paused);
                 if (!_paused)
                 {
                     Resync();
+                }
+                // After Resync: it rebuilds every MonitorCtx from scratch, so a
+                // flag set beforehand is discarded with the old instances.
+                ApplyTaskbarPolicy(managing: !_paused);
+                if (!_paused)
+                {
                     RetileAll();
                 }
                 Log(configError is null ? "config reloaded" : $"config reloaded with problems: {configError}");
@@ -1664,8 +1714,9 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                     // Deferred from startup when we began paused or dry.
                     FocusControl.Init();
                 }
-                ApplyTaskbarPolicy(managing: true);
                 Resync();
+                // After Resync — see the reload case.
+                ApplyTaskbarPolicy(managing: true);
                 RetileAll();
                 Log($"resumed, managing {_windowLoc.Count} windows");
                 PublishEvent("resume");
