@@ -55,6 +55,8 @@ InvalidateRect
 
 // Focus
 GetCursorPos
+GetAsyncKeyState
+VIRTUAL_KEY
 GetShellWindow
 SetForegroundWindow
 AllowSetForegroundWindow

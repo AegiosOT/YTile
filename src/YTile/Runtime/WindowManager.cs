@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Windows.Win32;
 using Windows.Win32.Foundation;
+using Windows.Win32.UI.Input.KeyboardAndMouse;
 using Windows.Win32.UI.WindowsAndMessaging;
 using YTile.Config;
 using YTile.Core;
@@ -103,6 +104,11 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     // A clamped resize larger than this margin means the window refused the cell.
     private const int FitTolerance = 8;
 
+    // Grace before a button-up drag counts as abandoned. Long enough that a
+    // keyboard move (Alt+Space) isn't cut short, short enough that a stranded
+    // window comes back under management while the user is still looking.
+    private const int DragStaleMs = 3000;
+
     private YTileConfig _config = config;
 
     private readonly List<MonitorCtx> _monitors = [];
@@ -120,6 +126,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     // asked for; windows that clamp (WM_GETMINMAXINFO) never occupy it.
     private RectI _dragStartRect;
     private bool _dragStartValid;
+    private long _dragStartedAtMs;
 
     // Monitor reconciliation timings (all load-bearing against real OS behavior):
     // 500ms trailing debounce on change bursts, 3s grace before trusting a
@@ -176,6 +183,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                             }
                             break;
                         case WmMessage.ReaperTick:
+                            ClearStaleDrag();
                             ReapDeadWindows();
                             VerifyCellFits();
                             CheckDisplayChange();
@@ -424,6 +432,10 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         _focusedMonitor = 0;
         _windowLoc.Clear();
         _pendingRetiles.Clear();
+        // Any drag in flight when we paused swallowed its MOVESIZEEND — don't
+        // carry the exclusion into the new generation of state.
+        _dragHwnd = 0;
+        _dragStartValid = false;
         Adopt();
         RestorePlacements(placement, focusSlots, focusedDevice);
         SeedFocusFromForeground();
@@ -555,9 +567,21 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         {
             case WmEventKind.Show:
             case WmEventKind.Uncloak:
-                if (!_windowLoc.ContainsKey(e.Hwnd))
+                if (!_windowLoc.TryGetValue(e.Hwnd, out (int M, int W) showLoc))
                 {
                     TryAddWindow(e.Hwnd, retile: true, adopting: false);
+                }
+                else if (showLoc.W != _monitors[showLoc.M].Active && e.Hwnd != ForegroundHwnd())
+                {
+                    // The app un-hid itself on a workspace we aren't showing.
+                    // Nothing retiles a hidden workspace, so left alone it
+                    // hangs over the visible one at a stale size forever —
+                    // and NormalizeCloak won't touch it, because as far as
+                    // _selfCloaked knows it is already hidden. Force it back
+                    // under. (If it also took foreground, the focus path
+                    // follows it to its workspace instead.)
+                    Log($"0x{e.Hwnd:X8} reappeared on hidden workspace {showLoc.W + 1} — re-hiding");
+                    CloakWin(e.Hwnd);
                 }
                 break;
 
@@ -593,6 +617,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 if (_windowLoc.ContainsKey(e.Hwnd))
                 {
                     _dragHwnd = e.Hwnd;
+                    _dragStartedAtMs = Environment.TickCount64;
                     _dragStartValid = TryGetRect(e.Hwnd, out _dragStartRect);
                 }
                 break;
@@ -1099,6 +1124,33 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     private bool IsFloating((int M, int W) loc, nint hwnd)
         => _monitors[loc.M].Workspaces[loc.W].Floating.Exists(w => w.Hwnd == hwnd);
 
+    /// <summary>
+    /// A window mid-drag is skipped by every retile, so a MOVESIZEEND that
+    /// never arrives strands it at whatever geometry the drag left — no
+    /// resize, ever again. END really does go missing: the raw channel drops
+    /// oldest under pressure, and any drag spanning a pause is swallowed
+    /// wholesale. Once the mouse button is up and a grace has passed, treat
+    /// the drag as over whether or not the OS told us.
+    /// </summary>
+    private void ClearStaleDrag()
+    {
+        if (_dragHwnd == 0
+            || Environment.TickCount64 - _dragStartedAtMs < DragStaleMs
+            || LeftButtonDown())
+        {
+            return;
+        }
+
+        nint hwnd = _dragHwnd;
+        _dragHwnd = 0;
+        _dragStartValid = false;
+        Log($"drag state for 0x{hwnd:X8} went stale (no MOVESIZEEND) — retiling");
+        if (_windowLoc.TryGetValue(hwnd, out (int M, int W) loc) && loc.W == _monitors[loc.M].Active)
+        {
+            Retile(loc.M);
+        }
+    }
+
     private void ProcessPendingRetiles()
     {
         if (_pendingRetiles.Count == 0 || _paused)
@@ -1252,6 +1304,14 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             // anything that landed on an inactive workspace.
             RetileAll();
             NormalizeCloaks();
+            // One pass is not enough across a resolution or DPI change: the
+            // async SetWindowPos lands against the old frame metrics. Re-apply
+            // once the new geometry has settled.
+            long dueMs = Environment.TickCount64 + 300;
+            for (int m = 0; m < _monitors.Count; m++)
+            {
+                _pendingRetiles.Add((m, dueMs));
+            }
         }
         PublishEvent("monitors_change");
     }
@@ -1295,6 +1355,11 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     private static unsafe bool IsWindowAlive(nint hwnd) => PInvoke.IsWindow(new HWND(hwnd));
 
     private static unsafe bool IsZoomedWin(nint hwnd) => PInvoke.IsZoomed(new HWND(hwnd));
+
+    /// <summary>Async (not per-thread-input-queue) button state — we need the
+    /// real physical state, not this thread's stale snapshot.</summary>
+    private static unsafe bool LeftButtonDown()
+        => (PInvoke.GetAsyncKeyState((int)VIRTUAL_KEY.VK_LBUTTON) & 0x8000) != 0;
 
     private static unsafe void RestoreWin(nint hwnd) => PInvoke.ShowWindow(new HWND(hwnd), SHOW_WINDOW_CMD.SW_RESTORE);
 
@@ -1820,6 +1885,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         }
 
         ManagedWindow? window = null;
+        bool wasFloating = false;
         int idx = ws.Windows.FindIndex(w => w.Hwnd == target);
         if (idx >= 0)
         {
@@ -1841,6 +1907,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             {
                 window = ws.Floating[floatIdx];
                 ws.Floating.RemoveAt(floatIdx);
+                wasFloating = true;
             }
         }
 
@@ -1849,8 +1916,20 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             return new CommandReply(false, "no managed window to send");
         }
 
+        // A floating window stays floating on the far side — landing it in the
+        // tiled list would force a window that floats precisely because it
+        // can't fit a cell (min-size clamp, or the user's explicit choice)
+        // back into one, where it overlaps its neighbors indefinitely.
         window.PendingVerify = false;
-        mc.Workspaces[index].Windows.Add(window);
+        Workspace destination = mc.Workspaces[index];
+        if (wasFloating)
+        {
+            destination.Floating.Add(window);
+        }
+        else
+        {
+            destination.Windows.Add(window);
+        }
         _windowLoc[target] = (_focusedMonitor, index);
         if (_borderHwnd == target)
         {
