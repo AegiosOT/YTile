@@ -122,10 +122,10 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     // A clamped resize larger than this margin means the window refused the cell.
     private const int FitTolerance = 8;
 
-    // Grace before a button-up drag counts as abandoned. Long enough that a
-    // keyboard move (Alt+Space) isn't cut short, short enough that a stranded
-    // window comes back under management while the user is still looking.
-    private const int DragStaleMs = 3000;
+    // How long the mouse button must stay up, mid-drag, before we conclude
+    // MOVESIZEEND is never coming. Measured from release, so the drag itself
+    // may take as long as the user likes.
+    private const int DragStaleMs = 1500;
 
     private YTileConfig _config = config;
 
@@ -145,6 +145,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     private RectI _dragStartRect;
     private bool _dragStartValid;
     private long _dragStartedAtMs;
+    private long _dragButtonUpSinceMs;
 
     // Monitor reconciliation timings (all load-bearing against real OS behavior):
     // 500ms trailing debounce on change bursts, 3s grace before trusting a
@@ -812,6 +813,13 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                     break;
                 }
 
+                // Everything else snaps back to the computed cell. That is the
+                // one outcome a user reports as "it did nothing", so say why:
+                // whether the start rect was lost, and what the deltas were
+                // that no split could absorb.
+                Log($"drag 0x{e.Hwnd:X8} slot {dragged}/{ws.Windows.Count} [{ws.Layout}] not folded — "
+                    + $"{(sizeUnchanged ? "moved, no drop target" : haveStart ? "no split absorbed it" : "start rect lost")}; "
+                    + $"before={before} dropped={dropped}");
                 Retile(loc.M);
                 break;
             }
@@ -1240,12 +1248,37 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     /// </summary>
     private void ClearStaleDrag()
     {
-        if (_dragHwnd == 0
-            || Environment.TickCount64 - _dragStartedAtMs < DragStaleMs
-            || LeftButtonDown())
+        // Never fight the user's own arrangement while paused.
+        if (_dragHwnd == 0 || _paused)
+        {
+            _dragButtonUpSinceMs = 0;
+            return;
+        }
+
+        // Time the grace from the button coming UP, not from the drag starting.
+        // Keyed off drag duration this raced MOVESIZEEND: a careful resize
+        // lasting longer than the grace could have its state wiped in the gap
+        // between release and the event arriving (the tick writes straight to
+        // the actor queue; MOVESIZEEND crosses two channels first), and the
+        // resize was then silently discarded. Timed from release, a real
+        // MOVESIZEEND always wins — it lands in milliseconds.
+        if (LeftButtonDown())
+        {
+            _dragButtonUpSinceMs = 0;
+            return;
+        }
+
+        long nowMs = Environment.TickCount64;
+        if (_dragButtonUpSinceMs == 0)
+        {
+            _dragButtonUpSinceMs = nowMs;
+            return;
+        }
+        if (nowMs - _dragButtonUpSinceMs < DragStaleMs)
         {
             return;
         }
+        _dragButtonUpSinceMs = 0;
 
         nint hwnd = _dragHwnd;
         _dragHwnd = 0;
