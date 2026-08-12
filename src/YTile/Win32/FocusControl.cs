@@ -1,7 +1,6 @@
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Dwm;
-using Windows.Win32.UI.Input.KeyboardAndMouse;
 using Windows.Win32.UI.WindowsAndMessaging;
 
 namespace YTile.Win32;
@@ -24,16 +23,37 @@ internal static unsafe class FocusControl
 
     /// <summary>
     /// SetForegroundWindow refuses callers that haven't received input recently.
-    /// Emitting one benign no-op key-up first satisfies that heuristic.
+    /// The widespread workaround is to inject a synthetic keystroke first — do
+    /// NOT do that here: a global hotkey daemon (whkd) hooks the keyboard at a
+    /// level that sees injected input as a real keypress, and since the user is
+    /// still holding the modifier when their binding fires, the phantom key
+    /// completes another chord and re-runs a binding. That made every
+    /// keybind-driven workspace switch bounce straight back.
+    ///
+    /// Borrowing the foreground thread's input state achieves the same
+    /// permission without generating any input at all.
     /// </summary>
     public static void Focus(nint hwndRaw)
     {
-        INPUT input = default;
-        input.type = INPUT_TYPE.INPUT_KEYBOARD;
-        input.Anonymous.ki.wVk = 0;
-        input.Anonymous.ki.dwFlags = KEYBD_EVENT_FLAGS.KEYEVENTF_KEYUP;
-        PInvoke.SendInput(new Span<INPUT>(ref input), sizeof(INPUT));
-        PInvoke.SetForegroundWindow(new HWND(hwndRaw));
+        var hwnd = new HWND(hwndRaw);
+        if (PInvoke.SetForegroundWindow(hwnd))
+        {
+            return;
+        }
+
+        HWND foreground = PInvoke.GetForegroundWindow();
+        uint fgThread = foreground.IsNull ? 0 : PInvoke.GetWindowThreadProcessId(foreground, null);
+        uint ourThread = PInvoke.GetCurrentThreadId();
+        if (fgThread == 0 || fgThread == ourThread)
+        {
+            return;
+        }
+
+        if (PInvoke.AttachThreadInput(ourThread, fgThread, true))
+        {
+            PInvoke.SetForegroundWindow(hwnd);
+            PInvoke.AttachThreadInput(ourThread, fgThread, false);
+        }
     }
 
     /// <summary>

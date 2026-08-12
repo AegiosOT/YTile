@@ -60,7 +60,8 @@ VIRTUAL_KEY
 GetShellWindow
 SetForegroundWindow
 AllowSetForegroundWindow
-SendInput
+AttachThreadInput
+GetCurrentThreadId
 SystemParametersInfoW
 ASFW_ANY
 
