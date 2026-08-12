@@ -41,6 +41,22 @@ internal sealed class Workspace
     /// <summary>Non-zero: this tiled window fills the work area, others are hidden.</summary>
     public nint MonocleHwnd { get; set; }
 
+    // User resize adjustments, consumed by Layouts.Compute: one first-half
+    // ratio per BSP split (default 0.5), one width weight per column
+    // (default 1.0). Keyed by split/column index, so window churn shifts
+    // which visual boundary an entry controls — 'ytile retile' resets them.
+    public List<double> BspRatios { get; } = [];
+    public List<double> ColumnWeights { get; } = [];
+
+    public IReadOnlyList<double> SizingFor(LayoutKind kind)
+        => kind == LayoutKind.Columns ? ColumnWeights : BspRatios;
+
+    public void ClearSizing()
+    {
+        BspRatios.Clear();
+        ColumnWeights.Clear();
+    }
+
     public ManagedWindow? Focused =>
         FocusedIndex >= 0 && FocusedIndex < Windows.Count ? Windows[FocusedIndex] : null;
 
@@ -98,6 +114,12 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     private int _focusedMonitor;
     private nint _borderHwnd;
     private nint _dragHwnd;
+
+    // Real on-screen rect when the drag began — the baseline that classifies
+    // move vs resize and sizes resize deltas. Requested* is only the rect we
+    // asked for; windows that clamp (WM_GETMINMAXINFO) never occupy it.
+    private RectI _dragStartRect;
+    private bool _dragStartValid;
 
     // Monitor reconciliation timings (all load-bearing against real OS behavior):
     // 500ms trailing debounce on change bursts, 3s grace before trusting a
@@ -301,10 +323,12 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         {
             var layouts = new Dictionary<string, List<LayoutKind>>();
             var reservations = new Dictionary<string, (int L, int T, int R, int B)>();
+            var sizings = new Dictionary<string, (double[] Bsp, double[] Cols)[]>();
             foreach (MonitorCtx mc in _monitors)
             {
                 layouts[mc.Desc.Device] = [.. mc.Workspaces.Select(w => w.Layout)];
                 reservations[mc.Desc.Device] = mc.Reserved;
+                sizings[mc.Desc.Device] = [.. mc.Workspaces.Select(w => (w.BspRatios.ToArray(), w.ColumnWeights.ToArray()))];
             }
 
             _monitors.Clear();
@@ -320,6 +344,14 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                     for (int i = 0; i < WorkspaceCount; i++)
                     {
                         mc.Workspaces[i].Layout = kinds[i];
+                    }
+                }
+                if (sizings.TryGetValue(desc.Device, out (double[] Bsp, double[] Cols)[]? sizing))
+                {
+                    for (int i = 0; i < WorkspaceCount; i++)
+                    {
+                        mc.Workspaces[i].BspRatios.AddRange(sizing[i].Bsp);
+                        mc.Workspaces[i].ColumnWeights.AddRange(sizing[i].Cols);
                     }
                 }
                 if (reservations.TryGetValue(desc.Device, out (int L, int T, int R, int B) reserved))
@@ -398,12 +430,16 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 if (_windowLoc.ContainsKey(e.Hwnd))
                 {
                     _dragHwnd = e.Hwnd;
+                    _dragStartValid = TryGetRect(e.Hwnd, out _dragStartRect);
                 }
                 break;
 
             case WmEventKind.MoveResizeEnd:
             {
+                bool haveStart = _dragStartValid && _dragHwnd == e.Hwnd;
+                RectI startRect = _dragStartRect;
                 _dragHwnd = 0;
+                _dragStartValid = false;
                 if (!_windowLoc.TryGetValue(e.Hwnd, out (int M, int W) loc)
                     || loc.W != _monitors[loc.M].Active
                     || IsFloating(loc, e.Hwnd))
@@ -411,29 +447,57 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                     break; // floating windows move freely
                 }
 
-                // Unchanged size + moved = a drag: swap with the window whose
-                // cell the cursor dropped on. Anything else snaps back.
                 Workspace ws = _monitors[loc.M].ActiveWs;
                 int dragged = ws.Windows.FindIndex(w => w.Hwnd == e.Hwnd);
-                if (dragged >= 0
-                    && ws.MonocleHwnd == 0
-                    && TryGetRect(e.Hwnd, out RectI dropped)
-                    && Math.Abs(dropped.W - ws.Windows[dragged].RequestedW) <= FitTolerance
-                    && Math.Abs(dropped.H - ws.Windows[dragged].RequestedH) <= FitTolerance
-                    && TryGetCursor(out int cx, out int cy))
+                if (dragged < 0 || ws.MonocleHwnd != 0 || !TryGetRect(e.Hwnd, out RectI dropped))
                 {
-                    int target = ws.Windows.FindIndex(w => w.Hwnd != e.Hwnd
-                        && cx >= w.LastRect.X && cx < w.LastRect.Right
-                        && cy >= w.LastRect.Y && cy < w.LastRect.Bottom);
-                    if (target >= 0)
+                    Retile(loc.M);
+                    break;
+                }
+
+                // The pre-drag baseline: the real observed rect when the drag
+                // began, or the last requested rect if START was lost (the raw
+                // event channel drops oldest under pressure).
+                ManagedWindow win = ws.Windows[dragged];
+                RectI before = haveStart
+                    ? startRect
+                    : new RectI(win.RequestedX, win.RequestedY, win.RequestedW, win.RequestedH);
+
+                bool sizeUnchanged = Math.Abs(dropped.W - before.W) <= FitTolerance
+                                  && Math.Abs(dropped.H - before.H) <= FitTolerance;
+                if (sizeUnchanged)
+                {
+                    // A drag: swap with the window whose cell the cursor
+                    // dropped on. Dropped anywhere else, it snaps back.
+                    if (TryGetCursor(out int cx, out int cy))
                     {
-                        (ws.Windows[dragged], ws.Windows[target]) = (ws.Windows[target], ws.Windows[dragged]);
-                        ws.FocusedIndex = target;
-                        Log($"drag-swap 0x{e.Hwnd:X8} -> slot {target}");
-                        Retile(loc.M);
-                        PublishEvent("move");
-                        break;
+                        int target = ws.Windows.FindIndex(w => w.Hwnd != e.Hwnd
+                            && cx >= w.LastRect.X && cx < w.LastRect.Right
+                            && cy >= w.LastRect.Y && cy < w.LastRect.Bottom);
+                        if (target >= 0)
+                        {
+                            (ws.Windows[dragged], ws.Windows[target]) = (ws.Windows[target], ws.Windows[dragged]);
+                            ws.FocusedIndex = target;
+                            Log($"drag-swap 0x{e.Hwnd:X8} -> slot {target}");
+                            Retile(loc.M);
+                            PublishEvent("move");
+                            break;
+                        }
                     }
+                }
+                else if (LayoutResizer.ApplyEdgeDeltas(
+                    ws.Layout, _monitors[loc.M].EffectiveWorkArea, ws.Windows.Count, _config.Gap,
+                    ws.BspRatios, ws.ColumnWeights, dragged,
+                    dropped.X - before.X, dropped.Y - before.Y,
+                    dropped.Right - before.Right, dropped.Bottom - before.Bottom,
+                    minDelta: FitTolerance))
+                {
+                    // A resize: the edge deltas are folded into the layout so
+                    // the retile keeps the user's size instead of snapping back.
+                    Log($"resize 0x{e.Hwnd:X8} folded into layout");
+                    Retile(loc.M);
+                    PublishEvent("resize");
+                    break;
                 }
 
                 Retile(loc.M);
@@ -606,6 +670,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         if (_dragHwnd == hwnd)
         {
             _dragHwnd = 0;
+            _dragStartValid = false;
         }
 
         if (_borderHwnd == hwnd)
@@ -684,7 +749,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             ws.MonocleHwnd = 0; // window went away — fall through to normal tiling
         }
 
-        RectI[] cells = Layouts.Compute(ws.Layout, mc.EffectiveWorkArea, ws.Windows.Count, _config.Gap);
+        RectI[] cells = Layouts.Compute(ws.Layout, mc.EffectiveWorkArea, ws.Windows.Count, _config.Gap, ws.SizingFor(ws.Layout));
         for (int i = 0; i < ws.Windows.Count; i++)
         {
             ManagedWindow w = ws.Windows[i];
@@ -1291,6 +1356,14 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 {
                     return new CommandReply(false, "paused — resume first");
                 }
+                // retile is the documented reset for resize adjustments.
+                foreach (MonitorCtx m in _monitors)
+                {
+                    foreach (Workspace w in m.Workspaces)
+                    {
+                        w.ClearSizing();
+                    }
+                }
                 RetileAll();
                 PublishEvent("retile");
                 return new CommandReply(true, Message: "retiled");
@@ -1464,6 +1537,54 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 Retile(_focusedMonitor);
                 PublishEvent("move");
                 return new CommandReply(true, Message: "moved");
+            }
+
+            case "resize":
+            {
+                if (_paused)
+                {
+                    return new CommandReply(false, "paused — resume first");
+                }
+
+                // "<dir> [px]" — grow the focused window toward <dir> by px
+                // (default config resizeStep); negative px shrinks.
+                string[] parts = req.Arg?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? [];
+                Direction? dir = parts.Length is 1 or 2 ? DirectionParser.Parse(parts[0]) : null;
+                int step = _config.ResizeStep;
+                if (dir is null || (parts.Length == 2 && !int.TryParse(parts[1], out step)))
+                {
+                    return new CommandReply(false, "usage: resize <left|right|up|down> [px]");
+                }
+
+                MonitorCtx mc = _monitors[_focusedMonitor];
+                Workspace ws = mc.ActiveWs;
+                if (ws.MonocleHwnd != 0)
+                {
+                    return new CommandReply(false, "monocled — leave monocle first");
+                }
+                if (ws.Focused is null)
+                {
+                    return new CommandReply(false, "no tiled window focused");
+                }
+
+                (int dl, int dt, int dr, int db) = dir.Value switch
+                {
+                    Direction.Left => (-step, 0, 0, 0),
+                    Direction.Right => (0, 0, step, 0),
+                    Direction.Up => (0, -step, 0, 0),
+                    _ => (0, 0, 0, step),
+                };
+                bool changed = LayoutResizer.ApplyEdgeDeltas(
+                    ws.Layout, mc.EffectiveWorkArea, ws.Windows.Count, _config.Gap,
+                    ws.BspRatios, ws.ColumnWeights, ws.FocusedIndex, dl, dt, dr, db, minDelta: 1);
+                if (!changed)
+                {
+                    return new CommandReply(false, $"no adjustable edge {parts[0]} of focused");
+                }
+
+                Retile(_focusedMonitor);
+                PublishEvent("resize");
+                return new CommandReply(true, Message: $"resized {parts[0]} {step}px");
             }
 
             default:

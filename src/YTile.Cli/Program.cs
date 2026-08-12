@@ -31,7 +31,7 @@ internal static class Program
                 break;
             case "subscribe":
                 return Subscribe();
-            case "layout" or "focus" or "move" or "workspace" or "send" when arg is not null:
+            case "layout" or "focus" or "move" or "workspace" or "send" or "resize" when arg is not null:
                 break;
             case "reserve" when args.Length == 6:
                 break;
@@ -40,6 +40,9 @@ internal static class Program
                 return 2;
             case "focus" or "move":
                 Console.Error.WriteLine($"usage: ytile {cmd} <left|right|up|down>");
+                return 2;
+            case "resize":
+                Console.Error.WriteLine("usage: ytile resize <left|right|up|down> [px]");
                 return 2;
             case "workspace" or "send":
                 Console.Error.WriteLine($"usage: ytile {cmd} <1-9>");
@@ -211,6 +214,7 @@ internal static class Program
               state                     show monitors, workspaces, and windows
               focus <left|right|up|down>   focus the window in that direction
               move  <left|right|up|down>   swap focused window in that direction
+              resize <left|right|up|down> [px]  grow the focused window that way (negative px shrinks)
               workspace <1-9>           switch the focused monitor's workspace
               send <1-9>                send the focused window to a workspace
               layout <bsp|columns>      set layout on the active workspace

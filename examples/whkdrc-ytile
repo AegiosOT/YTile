@@ -24,6 +24,12 @@ alt + shift + 2    : ytile send 2
 alt + shift + 3    : ytile send 3
 alt + shift + 4    : ytile send 4
 
+# resize (alt+= grows right/down, alt+- shrinks; pixel amount is resizeStep)
+alt + oem_plus         : ytile resize right
+alt + oem_minus        : ytile resize right -50
+alt + shift + oem_plus : ytile resize down
+alt + shift + oem_minus: ytile resize down -50
+
 # layout + misc
 alt + t            : ytile float
 alt + b            : ytile layout bsp

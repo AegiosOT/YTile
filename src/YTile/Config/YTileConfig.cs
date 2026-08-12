@@ -8,7 +8,7 @@ namespace YTile.Config;
 
 internal sealed record RuleDto(string? Match, string? Pattern, string? Strategy, string? Action);
 
-internal sealed record ConfigDto(int? Gap, string? FocusBorderColor, string? DefaultLayout, List<RuleDto>? Rules);
+internal sealed record ConfigDto(int? Gap, string? FocusBorderColor, string? DefaultLayout, int? ResizeStep, List<RuleDto>? Rules);
 
 [JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(ConfigDto))]
@@ -81,6 +81,9 @@ internal sealed class YTileConfig
     public uint FocusBorderColor { get; private init; } = 0x00D69C56;
 
     public LayoutKind DefaultLayout { get; private init; } = LayoutKind.Bsp;
+
+    /// <summary>Default pixel amount for `ytile resize` without an explicit px.</summary>
+    public int ResizeStep { get; private init; } = 50;
 
     public IReadOnlyList<WindowRule> Rules { get; private init; } = BuiltInRules;
 
@@ -176,6 +179,19 @@ internal sealed class YTileConfig
             borderColor = 0x00D69C56;
         }
 
+        int resizeStep = 50;
+        if (dto.ResizeStep is int rs)
+        {
+            if (rs is >= 1 and <= 500)
+            {
+                resizeStep = rs;
+            }
+            else
+            {
+                problems.Add($"bad resizeStep {rs} (expected 1..500)");
+            }
+        }
+
         if (problems.Count > 0)
         {
             error = $"{path}: {string.Join("; ", problems)}";
@@ -186,6 +202,7 @@ internal sealed class YTileConfig
             Gap = dto.Gap ?? 8,
             FocusBorderColor = borderColor,
             DefaultLayout = dto.DefaultLayout?.ToLowerInvariant() == "columns" ? LayoutKind.Columns : LayoutKind.Bsp,
+            ResizeStep = resizeStep,
             Rules = rules,
         };
     }

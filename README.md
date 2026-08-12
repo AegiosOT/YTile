@@ -37,7 +37,8 @@ Early development.
   (ignore/float by exe/class/title; built-in ignores for status bars), `ytile reload`
 - [x] Monitor reconciliation (hotplug, resume, work-area changes)
 - [x] Drag-to-swap (drop a window on another cell), monocle (`ytile monocle`)
-- [ ] Resize deltas (manual resizes currently snap back)
+- [x] Resize deltas: edge-drags persist into the layout (BSP split ratios / column
+  weights), `ytile resize <dir> [px]` for keyboard resizing, `ytile retile` resets
 
 ## Building
 
@@ -60,6 +61,7 @@ ytiled --debug-events    # watch the window-event stream with tiling verdicts
 ytile state              # monitors, windows, layout, focus
 ytile focus left         # directional focus
 ytile move right         # swap focused window in a direction
+ytile resize left 80     # grow the focused window 80px leftward (negative shrinks)
 ytile workspace 2        # switch the focused monitor's workspace (1-9)
 ytile send 3             # send the focused window to a workspace
 ytile layout columns     # bsp | columns, per active workspace
@@ -70,6 +72,11 @@ ytile pause / resume / retile / stop
 Windows that refuse to shrink to their cell (launchers like Battle.net enforce a
 minimum size) are detected automatically and float instead of overlapping the layout.
 
+Dragging a tiled window's edge resizes it for real: the new size is folded into
+the layout (per-split ratios in BSP, per-column weights in Columns) and survives
+retiles. `ytile resize <dir> [px]` does the same from the keyboard (`resizeStep`
+sets the default amount); `ytile retile` resets all adjustments.
+
 ## Configuration
 
 `~/.config/ytile/ytile.json` (see [examples/ytile.json](examples/ytile.json); all keys optional):
@@ -79,6 +86,7 @@ minimum size) are detected automatically and float instead of overlapping the la
   "gap": 8,
   "focusBorderColor": "#569CD6",
   "defaultLayout": "bsp",
+  "resizeStep": 50,
   "rules": [
     { "match": "exe", "pattern": "Battle.net.exe", "action": "float" },
     { "match": "title", "pattern": "Picture.in.[Pp]icture", "strategy": "regex", "action": "float" }
