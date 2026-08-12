@@ -15,8 +15,13 @@ permissions:
 jobs:
   release:
     runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow_dispatch runs on main by default; always build the tagged commit.
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -25,32 +30,70 @@ jobs:
       - name: Test
         run: dotnet test tests/YTile.Tests -c Release
 
-      - name: Publish (NativeAOT)
+      # Separate steps: pwsh run blocks only propagate the LAST command's exit
+      # code, which would let a failed ytiled publish slip through to Smoke-test.
+      - name: Publish ytiled (NativeAOT)
+        run: dotnet publish src/YTile -r win-x64 -c Release -o publish
+
+      - name: Publish ytile (NativeAOT)
+        run: dotnet publish src/YTile.Cli -r win-x64 -c Release -o publish
+
+      # A binary that cannot report its own version — or reports one that does
+      # not match the tag — is not shippable.
+      - name: Smoke-test
         run: |
-          dotnet publish src/YTile -r win-x64 -c Release -o publish
-          dotnet publish src/YTile.Cli -r win-x64 -c Release -o publish
+          $version = $env:TAG.TrimStart('v')
+          foreach ($exe in 'ytiled', 'ytile') {
+            $reported = (& "./publish/$exe.exe" --version) -join ''
+            if ($LASTEXITCODE -ne 0) {
+              throw "$exe.exe --version exited with $LASTEXITCODE"
+            }
+            Write-Host $reported
+            if ($reported -ne "$exe $version") {
+              throw "$exe.exe reports '$reported' but the tag says '$exe $version' — bump the Version const before tagging."
+            }
+          }
+
+      # The zip is the winget installer asset (InstallerType: zip, nested portable).
+      - name: Package zip
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          Compress-Archive -Path publish/ytiled.exe, publish/ytile.exe, LICENSE -DestinationPath "publish/ytile-$version-win-x64.zip"
 
       # The installer refuses to install a binary whose hash does not match.
       - name: Checksums
         run: |
+          $version = $env:TAG.TrimStart('v')
           cd publish
-          Get-FileHash ytiled.exe, ytile.exe -Algorithm SHA256 |
+          Get-FileHash ytiled.exe, ytile.exe, "ytile-$version-win-x64.zip" -Algorithm SHA256 |
             ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
             Set-Content SHA256SUMS.txt -Encoding ascii
           Get-Content SHA256SUMS.txt
 
-      # A binary that cannot report its own version is not shippable.
-      - name: Smoke-test
+      # Manifests must carry the hash of the exact zip the release serves, so
+      # they are generated here and attached to the release; the winget-pkgs
+      # submission uses them as-is.
+      - name: Winget manifests
         run: |
-          ./publish/ytiled.exe --version
-          ./publish/ytile.exe --version
+          $version = $env:TAG.TrimStart('v')
+          pwsh scripts/winget-manifests.ps1 -Version $version -ZipPath "publish/ytile-$version-win-x64.zip" -OutDir publish/winget
 
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: >
-          gh release create "$env:TAG"
-          publish/ytiled.exe publish/ytile.exe publish/SHA256SUMS.txt
-          --title "YTile $env:TAG"
-          --generate-notes
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          $assets = @(
+            'publish/ytiled.exe'
+            'publish/ytile.exe'
+            "publish/ytile-$version-win-x64.zip"
+            'publish/SHA256SUMS.txt'
+          ) + (Get-ChildItem publish/winget/*.yaml).FullName
+          # Idempotent: a re-run after a partial failure (gh creates the release,
+          # then uploads assets) must replace the assets, not die on 'already exists'.
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG @assets --clobber
+          } else {
+            gh release create $env:TAG @assets --title "YTile $env:TAG" --generate-notes
+          }

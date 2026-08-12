@@ -39,16 +39,32 @@ function Stop-YTile {
     $proc = Get-Process ytiled -ErrorAction SilentlyContinue
     if (-not $proc) { return }
     Write-Step 'stopping the running daemon (its exe is locked while it runs)'
+    # The daemon may have been installed by winget rather than this script, so
+    # fall back to whatever `ytile` resolves to on PATH - the stop goes over a
+    # named pipe and works regardless of which channel installed the CLI.
     $cli = Join-Path $InstallDir 'ytile.exe'
-    if (Test-Path $cli) {
-        # Graceful: lets it restore cloaked windows and the taskbar.
-        & $cli stop 2>$null | Out-Null
+    if (-not (Test-Path $cli)) {
+        $resolved = Get-Command ytile -ErrorAction SilentlyContinue
+        $cli = if ($resolved) { $resolved.Source } else { $null }
+    }
+    if ($cli -and (Test-Path $cli)) {
+        # Graceful: lets it restore cloaked windows and the taskbar. try/catch
+        # because under EAP=Stop, Windows PowerShell 5.1 turns any stderr line
+        # of a redirected native command into a terminating NativeCommandError.
+        try { & $cli stop 2>$null | Out-Null } catch {}
         for ($i = 0; $i -lt 20 -and -not $proc.HasExited; $i++) { Start-Sleep -Milliseconds 150; $proc.Refresh() }
     }
     if (-not $proc.HasExited) {
-        Stop-Process -Id $proc.Id -Force -Confirm:$false
+        # SilentlyContinue: the graceful stop may land between the poll and here.
+        Stop-Process -Id $proc.Id -Force -Confirm:$false -ErrorAction SilentlyContinue
         Start-Sleep -Milliseconds 300
     }
+}
+
+# winget installs YTile too (AltimG.YTile); a copy from each channel on PATH is
+# a recipe for running a stale binary and thinking it's upgraded.
+function Test-WingetCopy {
+    Test-Path (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\ytile.exe')
 }
 
 function Add-ToUserPath($dir) {
@@ -92,8 +108,11 @@ if ($env:YTILE_UNINSTALL) {
 
     Write-Host ''
     Write-Host 'YTile removed.' -ForegroundColor Green
+    if (Test-WingetCopy) {
+        Write-Host 'A winget-installed copy of YTile is still present - remove it with: winget uninstall AltimG.YTile' -ForegroundColor Yellow
+    }
     if (Test-Path $ConfigPath) {
-        Write-Host "Your config was left alone at $ConfigPath — delete it by hand if you want it gone." -ForegroundColor DarkGray
+        Write-Host "Your config was left alone at $ConfigPath - delete it by hand if you want it gone." -ForegroundColor DarkGray
     }
     return
 }
@@ -137,23 +156,25 @@ try {
         Invoke-WebRequest -Uri $asset.browser_download_url -OutFile (Join-Path $staging $name) -UseBasicParsing
     }
 
-    # Verify against the release checksums when they are published.
+    # Every release ships SHA256SUMS.txt with a line per binary; a release
+    # missing either is incomplete (e.g. caught mid-upload), not verifiable.
     $sums = $release.assets | Where-Object { $_.name -eq 'SHA256SUMS.txt' } | Select-Object -First 1
-    if ($sums) {
-        Write-Step 'verifying checksums'
-        $expected = @{}
-        foreach ($line in (Invoke-WebRequest -Uri $sums.browser_download_url -UseBasicParsing).Content -split "`n") {
-            if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(\S+)\s*$') { $expected[$matches[2]] = $matches[1].ToLower() }
+    if (-not $sums) {
+        throw "Release $($release.tag_name) has no SHA256SUMS.txt - it may still be uploading; retry in a minute."
+    }
+    Write-Step 'verifying checksums'
+    $expected = @{}
+    foreach ($line in (Invoke-WebRequest -Uri $sums.browser_download_url -UseBasicParsing).Content -split "`n") {
+        if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(\S+)\s*$') { $expected[$matches[2]] = $matches[1].ToLower() }
+    }
+    foreach ($name in $Binaries) {
+        if (-not $expected.ContainsKey($name)) {
+            throw "SHA256SUMS.txt in release $($release.tag_name) has no entry for $name - refusing to install unverified."
         }
-        foreach ($name in $Binaries) {
-            if (-not $expected.ContainsKey($name)) { continue }
-            $actual = (Get-FileHash (Join-Path $staging $name) -Algorithm SHA256).Hash.ToLower()
-            if ($actual -ne $expected[$name]) {
-                throw "Checksum mismatch for $name — refusing to install. Expected $($expected[$name]), got $actual."
-            }
+        $actual = (Get-FileHash (Join-Path $staging $name) -Algorithm SHA256).Hash.ToLower()
+        if ($actual -ne $expected[$name]) {
+            throw "Checksum mismatch for $name - refusing to install. Expected $($expected[$name]), got $actual."
         }
-    } else {
-        Write-Host '    (release publishes no SHA256SUMS.txt — skipping verification)' -ForegroundColor DarkGray
     }
 
     foreach ($name in $Binaries) {
@@ -167,6 +188,13 @@ try {
 Add-ToUserPath $InstallDir
 # Make the tools usable in this session too, not just new terminals.
 if (($env:PATH -split ';') -notcontains $InstallDir) { $env:PATH = "$InstallDir;$env:PATH" }
+
+if (Test-WingetCopy) {
+    Write-Host ''
+    Write-Host 'Note: a winget-installed copy of YTile also exists. Whichever PATH entry was' -ForegroundColor Yellow
+    Write-Host 'added first wins in new terminals, so `ytile` may keep running the winget copy.' -ForegroundColor Yellow
+    Write-Host 'Pick one channel: winget uninstall AltimG.YTile   (or uninstall this copy instead)' -ForegroundColor Yellow
+}
 
 if (-not (Test-Path $ConfigPath)) {
     New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null

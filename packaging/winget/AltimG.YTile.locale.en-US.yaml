@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+# Template — scripts/winget-manifests.ps1 fills the placeholders at release time.
+PackageIdentifier: AltimG.YTile
+PackageVersion: {{VERSION}}
+PackageLocale: en-US
+Publisher: AltimG
+PublisherUrl: https://github.com/AltimG
+PublisherSupportUrl: https://github.com/AltimG/YTile/issues
+Author: AltimG
+PackageName: YTile
+PackageUrl: https://github.com/AltimG/YTile
+License: GPL-3.0
+LicenseUrl: https://github.com/AltimG/YTile/blob/main/LICENSE
+ShortDescription: Tiling window manager for Windows
+Description: |-
+  YTile tiles application windows automatically: nine workspaces per monitor
+  hidden by cloaking so alt-tab stays clean, BSP and Columns layouts plus
+  monocle, directional focus and movement that continue onto the adjacent
+  monitor, drag-to-swap, edge resizes that persist into the layout, per-app
+  float/ignore rules, optional taskbar hiding, and a named-pipe NDJSON API
+  for status bars. Ships a daemon (ytiled) and a CLI (ytile); pair with whkd
+  for hotkeys.
+Moniker: ytile
+Tags:
+- tiling
+- tiling-window-manager
+- window-manager
+- productivity
+ReleaseNotesUrl: https://github.com/AltimG/YTile/releases/tag/v{{VERSION}}
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0

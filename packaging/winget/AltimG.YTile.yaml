@@ -1,0 +1,7 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.10.0.schema.json
+# Template — scripts/winget-manifests.ps1 fills the placeholders at release time.
+PackageIdentifier: AltimG.YTile
+PackageVersion: {{VERSION}}
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.10.0
