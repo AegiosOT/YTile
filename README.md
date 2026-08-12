@@ -19,32 +19,18 @@ See [docs/komorebi-architecture-digest.md](docs/komorebi-architecture-digest.md)
 - **Quirks as data.** Per-application Windows quirks live in a declarative table consulted at
   defined pipeline points, not as special cases threaded through event handling.
 
-## Status
+## What it does
 
-Early development.
-
-- [x] Event spine: narrow WinEvent hooks, message pump, `--debug-events` dump mode
-- [x] Eligibility + window tracking (adoption pass, single-actor state)
-- [x] Layouts: BSP (dwindle), Columns
-- [x] Focus + directional movement (`ytile focus/move left|right|up|down`)
-- [x] IPC (named-pipe NDJSON) + `ytile` CLI verbs
-- [x] Focus border (`DWMWA_BORDER_COLOR`, Win11)
-- [x] Reaper (liveness sweep)
-- [x] Floating layer: auto-float when an app's minimum size exceeds its cell, `ytile float` toggle
-- [x] Workspaces: 9 per monitor, cloak-based hiding (`IApplicationView::SetCloak`), crash-safe restore
-- [x] IPC subscription stream + work-area reservation for bars ([docs/YTILE-IPC.md](docs/YTILE-IPC.md))
-- [x] Config file: `~/.config/ytile/ytile.json` — gap, border color, default layout, window rules
-  (ignore/float by exe/class/title; built-in ignores for status bars), `ytile reload`
-- [x] Monitor reconciliation (hotplug, resume, work-area changes)
-- [x] Drag-to-swap (drop a window on another cell), monocle (`ytile monocle`)
-- [x] Resize deltas: edge-drags persist into the layout (BSP split ratios / column
-  weights), `ytile resize <dir> [px]` for keyboard resizing, `ytile retile` resets
-- [x] Cross-monitor focus/move: directional commands continue onto the adjacent
-  monitor at the workspace edge
-- [x] Workspace assignments survive pause/resume and `ytile reload` (placement
-  snapshot + restore around the re-adoption pass)
-- [x] Packaging: `scripts/publish.ps1`, `ytile start` (background daemon, file log),
-  `ytile autostart on|off|status` (HKCU Run entry)
+Nine workspaces per monitor, hidden by cloaking rather than minimising so
+alt-tab stays clean. BSP (dwindle) and Columns layouts, plus monocle. Focus and
+movement are directional and continue onto the adjacent monitor at the edge.
+Drag a window onto another to swap them, or drag an edge to resize — the new
+size folds into the layout and survives retiles. Windows too large for their
+cell float automatically instead of overlapping their neighbours, and per-app
+rules can force either behaviour. Monitors can be hot-plugged. The Windows
+taskbar can be hidden outright, with the reclaimed strip tiled over. Status bars
+talk to it over a named-pipe NDJSON API they can subscribe to and reserve screen
+edges through ([docs/YTILE-IPC.md](docs/YTILE-IPC.md)).
 
 ## Install
 
@@ -99,6 +85,8 @@ ytile workspace 2        # switch the focused monitor's workspace (1-9)
 ytile send 3             # send the focused window to a workspace
 ytile layout columns     # bsp | columns, per active workspace
 ytile float              # toggle floating for the focused window
+ytile monocle            # fullscreen the focused window within the layout
+ytile reload             # re-read the config (e.g. after toggling hideTaskbar)
 ytile pause / resume / retile / stop
 ```
 
@@ -128,11 +116,23 @@ sets the default amount); `ytile retile` resets all adjustments.
 }
 ```
 
-`hideTaskbar` hides the shell taskbar outright (not Windows' auto-hide setting)
-and tiles over the space it occupied — Windows keeps reserving the strip in the
-work area, so YTile switches to full monitor bounds while the bar is gone. It is
-restored whenever YTile stops or pauses. Auto-hide needs no setting: Windows
-already reports the reclaimed space, and layouts follow it.
+### Hiding the taskbar
+
+`hideTaskbar` (default `false`) hides the shell taskbar outright and tiles over
+the space it occupied — the Hyprland-style "the bar is simply not there", rather
+than Windows' auto-hide, which still reveals on hover. Hiding the tray window
+does not change the work area (Windows keeps reserving the strip), so YTile
+switches to full monitor bounds while the bar is gone; a status bar's `reserve`
+still applies on top of that.
+
+The taskbar comes back whenever YTile is not managing: on `stop`, on `pause`,
+and — because a killed daemon never runs its cleanup — on the next start, from a
+marker file. If the shell restarts and recreates the taskbar, YTile notices
+within a couple of seconds and hides it again. Toggle it live by editing the
+config and running `ytile reload`.
+
+Auto-hide needs no setting at all: Windows already reports the reclaimed space
+in the work area, and layouts follow it.
 
 Rules match on `exe`/`class`/`title` with `equals` (default), `prefix`, or `regex`
 strategies; actions are `ignore` and `float`. Status bars (komorebi-bar, ybar,
