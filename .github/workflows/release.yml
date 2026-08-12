@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (must already exist)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Test
+        run: dotnet test tests/YTile.Tests -c Release
+
+      - name: Publish (NativeAOT)
+        run: |
+          dotnet publish src/YTile -r win-x64 -c Release -o publish
+          dotnet publish src/YTile.Cli -r win-x64 -c Release -o publish
+
+      # The installer refuses to install a binary whose hash does not match.
+      - name: Checksums
+        run: |
+          cd publish
+          Get-FileHash ytiled.exe, ytile.exe -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content SHA256SUMS.txt -Encoding ascii
+          Get-Content SHA256SUMS.txt
+
+      # A binary that cannot report its own version is not shippable.
+      - name: Smoke-test
+        run: |
+          ./publish/ytiled.exe --version
+          ./publish/ytile.exe --version
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: >
+          gh release create "$env:TAG"
+          publish/ytiled.exe publish/ytile.exe publish/SHA256SUMS.txt
+          --title "YTile $env:TAG"
+          --generate-notes

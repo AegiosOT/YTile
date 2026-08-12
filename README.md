@@ -46,9 +46,33 @@ Early development.
 - [x] Packaging: `scripts/publish.ps1`, `ytile start` (background daemon, file log),
   `ytile autostart on|off|status` (HKCU Run entry)
 
+## Install
+
+```powershell
+irm https://raw.githubusercontent.com/AltimG/YTile/main/scripts/install.ps1 | iex
+```
+
+Downloads the latest release into `%LOCALAPPDATA%\Programs\ytile`, adds it to
+your user PATH, and writes a starter config if you don't have one. Per-user, no
+admin rights, nothing outside your profile. Options go in the environment,
+since a piped script takes no parameters:
+
+```powershell
+$env:YTILE_AUTOSTART = 1    # also start YTile at login
+$env:YTILE_START     = 1    # start the daemon when the install finishes
+$env:YTILE_VERSION   = 'v0.1.0'   # pin a version instead of latest
+$env:YTILE_UNINSTALL = 1    # remove YTile (config is left alone)
+```
+
+Re-run it any time to upgrade — it stops a running daemon first, since the
+binaries are locked while it runs. Hotkeys need
+[whkd](https://github.com/LGUG2Z/whkd) separately; see
+[examples/whkdrc-ytile](examples/whkdrc-ytile).
+
 ## Building
 
-Requires the .NET 10 SDK.
+Requires the .NET 10 SDK, plus VS Build Tools with the C++ workload for the
+NativeAOT linker.
 
 ```
 dotnet build                # dev build (JIT)
