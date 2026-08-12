@@ -83,11 +83,29 @@ internal sealed class MonitorCtx
     /// <summary>Reserved strip per edge (bars) — subtracted from the work area.</summary>
     public (int L, int T, int R, int B) Reserved { get; set; }
 
-    public RectI EffectiveWorkArea => new(
-        Desc.WorkArea.X + Reserved.L,
-        Desc.WorkArea.Y + Reserved.T,
-        Math.Max(0, Desc.WorkArea.W - Reserved.L - Reserved.R),
-        Math.Max(0, Desc.WorkArea.H - Reserved.T - Reserved.B));
+    /// <summary>
+    /// Set while YTile has the taskbar hidden. Hiding the tray window does not
+    /// update the monitor's work area — Windows keeps reserving the strip — so
+    /// tile from the full monitor bounds instead, or the taskbar's footprint
+    /// stays as dead space. Auto-hide needs no such handling: Windows already
+    /// reports the reclaimed space in rcWork.
+    /// </summary>
+    public bool UseFullBounds { get; set; }
+
+    private RectI Base => UseFullBounds ? Desc.Bounds : Desc.WorkArea;
+
+    public RectI EffectiveWorkArea
+    {
+        get
+        {
+            RectI b = Base;
+            return new RectI(
+                b.X + Reserved.L,
+                b.Y + Reserved.T,
+                Math.Max(0, b.W - Reserved.L - Reserved.R),
+                Math.Max(0, b.H - Reserved.T - Reserved.B));
+        }
+    }
 }
 
 /// <summary>
@@ -215,9 +233,30 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         {
         }
 
-        // Never exit leaving windows invisible.
+        // Never exit leaving windows invisible — or the user without a taskbar.
         UncloakAll();
         ClearBorder();
+        ApplyTaskbarPolicy(managing: false);
+    }
+
+    /// <summary>
+    /// Hides the taskbar when configured and actually managing; restores it
+    /// whenever we are not (paused, stopping, dry-run). Idempotent, and safe to
+    /// re-run after a monitor change — a new display brings a new tray window.
+    /// </summary>
+    private void ApplyTaskbarPolicy(bool managing)
+    {
+        bool hide = managing && _config.HideTaskbar && !dryRun;
+        if (hide || TaskbarControl.Hidden)
+        {
+            TaskbarControl.SetHidden(hide);
+        }
+
+        // Tile over the reclaimed strip only while it is genuinely gone.
+        foreach (MonitorCtx mc in _monitors)
+        {
+            mc.UseFullBounds = hide;
+        }
     }
 
     private void Bootstrap()
@@ -263,6 +302,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             throw new InvalidOperationException("no monitors found");
         }
 
+        ApplyTaskbarPolicy(managing: !_paused);
         Adopt();
         SeedFocusFromForeground();
         Log($"adopted {_windowLoc.Count} windows{(_paused ? " (paused)" : "")}");
@@ -1298,6 +1338,9 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         }
 
         Log($"monitors reconciled: {_monitors.Count} active, {_windowLoc.Count} windows");
+        // A newly attached display brings its own tray window, and the rebuilt
+        // MonitorCtx list has lost the full-bounds flag.
+        ApplyTaskbarPolicy(managing: !_paused);
         if (!_paused)
         {
             // Position first, uncloak after (the Chromium rule), then hide
@@ -1561,6 +1604,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             case "reload":
             {
                 _config = YTileConfig.Load(null, out string? configError);
+                ApplyTaskbarPolicy(managing: !_paused);
                 if (!_paused)
                 {
                     Resync();
@@ -1580,6 +1624,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 _paused = true;
                 UncloakAll();
                 ClearBorder();
+                ApplyTaskbarPolicy(managing: false);
                 Log("paused");
                 PublishEvent("pause");
                 return new CommandReply(true, Message: "paused");
@@ -1619,6 +1664,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                     // Deferred from startup when we began paused or dry.
                     FocusControl.Init();
                 }
+                ApplyTaskbarPolicy(managing: true);
                 Resync();
                 RetileAll();
                 Log($"resumed, managing {_windowLoc.Count} windows");

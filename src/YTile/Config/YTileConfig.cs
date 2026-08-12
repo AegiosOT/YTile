@@ -8,7 +8,7 @@ namespace YTile.Config;
 
 internal sealed record RuleDto(string? Match, string? Pattern, string? Strategy, string? Action);
 
-internal sealed record ConfigDto(int? Gap, string? FocusBorderColor, string? DefaultLayout, int? ResizeStep, List<RuleDto>? Rules);
+internal sealed record ConfigDto(int? Gap, string? FocusBorderColor, string? DefaultLayout, int? ResizeStep, bool? HideTaskbar, List<RuleDto>? Rules);
 
 [JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(ConfigDto))]
@@ -84,6 +84,12 @@ internal sealed class YTileConfig
 
     /// <summary>Default pixel amount for `ytile resize` without an explicit px.</summary>
     public int ResizeStep { get; private init; } = 50;
+
+    /// <summary>
+    /// Hide the shell taskbar entirely and tile over the space it occupied.
+    /// Restored whenever YTile pauses or exits.
+    /// </summary>
+    public bool HideTaskbar { get; private init; }
 
     public IReadOnlyList<WindowRule> Rules { get; private init; } = BuiltInRules;
 
@@ -203,6 +209,7 @@ internal sealed class YTileConfig
             FocusBorderColor = borderColor,
             DefaultLayout = dto.DefaultLayout?.ToLowerInvariant() == "columns" ? LayoutKind.Columns : LayoutKind.Bsp,
             ResizeStep = resizeStep,
+            HideTaskbar = dto.HideTaskbar ?? false,
             Rules = rules,
         };
     }

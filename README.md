@@ -96,12 +96,19 @@ sets the default amount); `ytile retile` resets all adjustments.
   "focusBorderColor": "#569CD6",
   "defaultLayout": "bsp",
   "resizeStep": 50,
+  "hideTaskbar": false,
   "rules": [
     { "match": "exe", "pattern": "Battle.net.exe", "action": "float" },
     { "match": "title", "pattern": "Picture.in.[Pp]icture", "strategy": "regex", "action": "float" }
   ]
 }
 ```
+
+`hideTaskbar` hides the shell taskbar outright (not Windows' auto-hide setting)
+and tiles over the space it occupied — Windows keeps reserving the strip in the
+work area, so YTile switches to full monitor bounds while the bar is gone. It is
+restored whenever YTile stops or pauses. Auto-hide needs no setting: Windows
+already reports the reclaimed space, and layouts follow it.
 
 Rules match on `exe`/`class`/`title` with `equals` (default), `prefix`, or `regex`
 strategies; actions are `ignore` and `float`. Status bars (komorebi-bar, ybar,

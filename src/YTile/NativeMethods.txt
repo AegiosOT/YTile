@@ -32,6 +32,8 @@ GetForegroundWindow
 GetWindowLongPtrW
 IsWindow
 IsWindowVisible
+FindWindowW
+FindWindowExW
 IsIconic
 IsZoomed
 ShowWindow
