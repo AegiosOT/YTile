@@ -77,8 +77,8 @@ internal sealed class YTileConfig
 
     public int Gap { get; private init; } = 8;
 
-    // COLORREF is 0x00BBGGRR — default is #569CD6 (calm blue).
-    public uint FocusBorderColor { get; private init; } = 0x00D69C56;
+    // COLORREF is 0x00BBGGRR — default is #FFFFFF (white).
+    public uint FocusBorderColor { get; private init; } = 0x00FFFFFF;
 
     public LayoutKind DefaultLayout { get; private init; } = LayoutKind.Bsp;
 
@@ -178,11 +178,11 @@ internal sealed class YTileConfig
         }
         rules.AddRange(BuiltInRules);
 
-        uint borderColor = 0x00D69C56;
+        uint borderColor = 0x00FFFFFF;
         if (dto.FocusBorderColor is not null && !TryParseColor(dto.FocusBorderColor, out borderColor))
         {
             problems.Add($"bad color '{dto.FocusBorderColor}' (expected #RRGGBB)");
-            borderColor = 0x00D69C56;
+            borderColor = 0x00FFFFFF;
         }
 
         int resizeStep = 50;

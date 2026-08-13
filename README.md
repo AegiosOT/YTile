@@ -120,7 +120,7 @@ sets the default amount); `ytile retile` resets all adjustments.
 ```json
 {
   "gap": 8,
-  "focusBorderColor": "#569CD6",
+  "focusBorderColor": "#FFFFFF",
   "defaultLayout": "bsp",
   "resizeStep": 50,
   "hideTaskbar": false,

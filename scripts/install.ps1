@@ -249,7 +249,7 @@ if (-not (Test-Path $ConfigPath)) {
     @'
 {
   "gap": 8,
-  "focusBorderColor": "#569CD6",
+  "focusBorderColor": "#FFFFFF",
   "defaultLayout": "bsp",
   "resizeStep": 50,
   "hideTaskbar": false,
