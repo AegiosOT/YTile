@@ -8,7 +8,7 @@ namespace YTile.Cli;
 
 internal static class Program
 {
-    private const string Version = "0.1.0";
+    private const string Version = "0.1.1-dev";
 
     private static int Main(string[] args)
     {
@@ -29,14 +29,16 @@ internal static class Program
 
         switch (cmd)
         {
-            case "state" or "pause" or "resume" or "retile" or "version" or "float" or "stop" or "reload" or "monocle":
+            case "state" or "pause" or "resume" or "retile" or "version" or "float" or "reload" or "monocle":
                 break;
             case "subscribe":
                 return Subscribe();
             case "start":
                 return Start(args[1..]);
+            case "stop":
+                return Stop(args[1..]);
             case "autostart":
-                return Autostart(args.Length > 1 ? args[1] : null);
+                return Autostart(args[1..]);
             case "layout" or "focus" or "move" or "workspace" or "send" or "resize" when arg is not null:
                 break;
             case "reserve" when args.Length == 6:
@@ -90,21 +92,37 @@ internal static class Program
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ytile", "ytiled.log");
 
     /// <summary>Launches ytiled.exe detached with no visible console, logging to
-    /// %LOCALAPPDATA%\ytile\ytiled.log, and waits for its IPC pipe to appear.</summary>
+    /// %LOCALAPPDATA%\ytile\ytiled.log, and waits for its IPC pipe to appear.
+    /// --whkd also brings up the whkd hotkey daemon alongside it.</summary>
     private static int Start(string[] extraArgs)
     {
+        bool withWhkd = false;
+        var daemonArgs = new List<string>();
         foreach (string a in extraArgs)
         {
-            if (a is not ("--force" or "--dry-run"))
+            switch (a)
             {
-                Console.Error.WriteLine("usage: ytile start [--force] [--dry-run]");
-                return 2;
+                case "--whkd":
+                    withWhkd = true;
+                    break;
+                case "--force" or "--dry-run":
+                    daemonArgs.Add(a);
+                    break;
+                default:
+                    Console.Error.WriteLine("usage: ytile start [--force] [--dry-run] [--whkd]");
+                    return 2;
             }
         }
 
         if (File.Exists(@"\\.\pipe\ytile"))
         {
             Console.Error.WriteLine("ytile: ytiled is already running.");
+            // Still honor --whkd: after a crash or manual kill of whkd alone,
+            // `ytile start --whkd` is the natural "bring everything up" retry.
+            if (withWhkd)
+            {
+                StartWhkd();
+            }
             return 1;
         }
 
@@ -123,7 +141,7 @@ internal static class Program
             RedirectStandardError = true,
         };
         psi.ArgumentList.Add("--log");
-        foreach (string a in extraArgs)
+        foreach (string a in daemonArgs)
         {
             psi.ArgumentList.Add(a);
         }
@@ -151,12 +169,162 @@ internal static class Program
             if (File.Exists(@"\\.\pipe\ytile"))
             {
                 Console.WriteLine($"ytiled started (pid {proc.Id}), logging to {LogPath}");
-                return 0;
+                return withWhkd && !StartWhkd() ? 1 : 0;
             }
         }
 
         Console.WriteLine($"ytiled launched (pid {proc.Id}) but its pipe hasn't appeared yet — check {LogPath}");
-        return 0;
+        return withWhkd && !StartWhkd() ? 1 : 0;
+    }
+
+    /// <summary>Sends stop to the daemon; --whkd also kills the whkd hotkey
+    /// daemon, the counterpart of `ytile start --whkd`.</summary>
+    private static int Stop(string[] extraArgs)
+    {
+        bool withWhkd = false;
+        foreach (string a in extraArgs)
+        {
+            if (a is not "--whkd")
+            {
+                Console.Error.WriteLine("usage: ytile stop [--whkd]");
+                return 2;
+            }
+            withWhkd = true;
+        }
+
+        int rc = 0;
+        CommandReply? reply = Send(new CommandRequest("stop"));
+        if (reply is null)
+        {
+            rc = 1;
+        }
+        else if (!reply.Ok)
+        {
+            Console.Error.WriteLine($"ytile: {reply.Error}");
+            rc = 1;
+        }
+        else if (reply.Message is not null)
+        {
+            Console.WriteLine(reply.Message);
+        }
+
+        // Tear whkd down even when the daemon was already gone: `stop --whkd`
+        // means "take it all down", whatever half is still standing.
+        if (withWhkd && !StopWhkd())
+        {
+            rc = 1;
+        }
+        return rc;
+    }
+
+    /// <summary>whkd instances in this session only. The keyboard hook is
+    /// per-session, so another user's whkd (fast user switching) neither serves
+    /// this session's hotkeys nor is ours to kill.</summary>
+    private static Process[] SessionWhkdProcesses()
+    {
+        using Process current = Process.GetCurrentProcess();
+        int session = current.SessionId;
+        var mine = new List<Process>();
+        foreach (Process proc in Process.GetProcessesByName("whkd"))
+        {
+            if (proc.SessionId == session)
+            {
+                mine.Add(proc);
+            }
+            else
+            {
+                proc.Dispose();
+            }
+        }
+        return mine.ToArray();
+    }
+
+    /// <summary>Launches whkd with a hidden window unless it is already running
+    /// in this session. UseShellExecute keeps our stdio handles out of it: a
+    /// redirected pipe nobody drains would block whkd's own logging, and an
+    /// inherited one keeps `ytile start | ...` captures open for whkd's whole
+    /// life. Returns false when whkd could not be brought up.</summary>
+    private static bool StartWhkd()
+    {
+        Process[] running = SessionWhkdProcesses();
+        if (running.Length > 0)
+        {
+            foreach (Process proc in running)
+            {
+                proc.Dispose();
+            }
+            Console.WriteLine("whkd already running");
+            return true;
+        }
+
+        Process? launched;
+        try
+        {
+            launched = Process.Start(new ProcessStartInfo
+            {
+                FileName = "whkd",
+                UseShellExecute = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            });
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"ytile: cannot start whkd — {ex.Message} (is whkd installed? https://github.com/LGUG2Z/whkd)");
+            return false;
+        }
+
+        if (launched is not null)
+        {
+            using (launched)
+            {
+                // whkd panics straight away without ~/.config/whkdrc, and its
+                // hidden console vanishes with it — this check is the only
+                // diagnostic the user will ever see.
+                Thread.Sleep(400);
+                if (launched.HasExited)
+                {
+                    Console.Error.WriteLine(
+                        "ytile: whkd exited immediately — is ~/.config/whkdrc present? see examples/whkdrc-ytile");
+                    return false;
+                }
+            }
+        }
+
+        Console.WriteLine("whkd started");
+        return true;
+    }
+
+    /// <summary>whkd has no IPC to ask it to exit, so kill is the only stop.
+    /// Returns false when a kill failed; "not running" is the desired end
+    /// state, not a failure.</summary>
+    private static bool StopWhkd()
+    {
+        Process[] procs = SessionWhkdProcesses();
+        if (procs.Length == 0)
+        {
+            Console.WriteLine("whkd not running");
+            return true;
+        }
+
+        bool ok = true;
+        foreach (Process proc in procs)
+        {
+            using (proc)
+            {
+                try
+                {
+                    proc.Kill();
+                    Console.WriteLine($"whkd stopped (pid {proc.Id})");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"ytile: cannot stop whkd (pid {proc.Id}) — {ex.Message}");
+                    ok = false;
+                }
+            }
+        }
+        return ok;
     }
 
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -165,17 +333,26 @@ internal static class Program
     /// <summary>Manages the HKCU Run entry that launches `ytile start` at login.
     /// The daemon still auto-pauses if komorebi is running, so an enabled entry
     /// is safe even while another tiler owns the desktop.</summary>
-    private static int Autostart(string? arg)
+    private static int Autostart(string[] args)
     {
-        switch (arg)
+        string? mode = args.Length > 0 ? args[0] : null;
+        bool withWhkd = args.Length > 1 && args[1] == "--whkd" && args.Length == 2;
+        if (args.Length > 1 && (!withWhkd || mode is not ("on" or "enable")))
+        {
+            Console.Error.WriteLine("usage: ytile autostart <on [--whkd]|off|status>");
+            return 2;
+        }
+
+        switch (mode)
         {
             case "on" or "enable":
             {
                 string self = Environment.ProcessPath
                     ?? Path.Combine(AppContext.BaseDirectory, "ytile.exe");
+                string command = $"\"{self}\" start{(withWhkd ? " --whkd" : "")}";
                 using RegistryKey key = Registry.CurrentUser.CreateSubKey(RunKeyPath);
-                key.SetValue(RunValueName, $"\"{self}\" start");
-                Console.WriteLine($"autostart on: \"{self}\" start");
+                key.SetValue(RunValueName, command);
+                Console.WriteLine($"autostart on: {command}");
                 return 0;
             }
             case "off" or "disable":
@@ -199,7 +376,7 @@ internal static class Program
                 return 0;
             }
             default:
-                Console.Error.WriteLine("usage: ytile autostart <on|off|status>");
+                Console.Error.WriteLine("usage: ytile autostart <on [--whkd]|off|status>");
                 return 2;
         }
     }
@@ -335,9 +512,10 @@ internal static class Program
 
             usage: ytile <command>
 
-              start [--force] [--dry-run]  launch ytiled in the background
-                                        (logs to %LOCALAPPDATA%\ytile\ytiled.log)
-              autostart <on|off|status>  run 'ytile start' automatically at login
+              start [--force] [--dry-run] [--whkd]  launch ytiled in the background
+                                        (--whkd also starts the whkd hotkey daemon;
+                                        logs to %LOCALAPPDATA%\ytile\ytiled.log)
+              autostart <on [--whkd]|off|status>  run 'ytile start' automatically at login
               state                     show monitors, workspaces, and windows
               focus <left|right|up|down>   focus that way (crosses monitors at the edge)
               move  <left|right|up|down>   swap focused window that way (crosses monitors)
@@ -353,7 +531,7 @@ internal static class Program
               reload                    reload ~/.config/ytile/ytile.json and resync
               pause                     restore hidden windows, stop reacting
               resume                    resync from the OS and start tiling
-              stop                      shut the daemon down
+              stop [--whkd]             shut the daemon down (--whkd stops whkd too)
               version                   daemon version
             """);
     }

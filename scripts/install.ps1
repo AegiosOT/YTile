@@ -281,4 +281,5 @@ Write-Host '  ytile state            show monitors, workspaces and windows'
 Write-Host '  ytile --help           all commands'
 Write-Host ''
 Write-Host 'Hotkeys need whkd (https://github.com/LGUG2Z/whkd); see examples/whkdrc-ytile.' -ForegroundColor DarkGray
+Write-Host 'Start both together: ytile start --whkd' -ForegroundColor DarkGray
 Write-Host 'Uninstall: $env:YTILE_UNINSTALL=1; irm https://raw.githubusercontent.com/JKUSAS/YTile/main/scripts/install.ps1 | iex' -ForegroundColor DarkGray

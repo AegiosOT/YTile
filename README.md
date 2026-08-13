@@ -66,7 +66,8 @@ $env:YTILE_UNINSTALL = 1    # remove YTile (config is left alone)
 Re-run it any time to upgrade — it stops a running daemon first, since the
 binaries are locked while it runs. Hotkeys need
 [whkd](https://github.com/LGUG2Z/whkd) separately; see
-[examples/whkdrc-ytile](examples/whkdrc-ytile).
+[examples/whkdrc-ytile](examples/whkdrc-ytile). `ytile start --whkd` brings
+both up together (`ytile autostart on --whkd` does the same at login).
 
 ## Building
 

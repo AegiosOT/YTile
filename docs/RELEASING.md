@@ -23,6 +23,10 @@
    works, but only from the second release onward — `update` requires the
    package to already exist in winget-pkgs.)
    `winget install JKUSAS.YTile` picks the version up once the PR is merged.
+5. Back on `main`, bump both `Version` consts to the next patch version with a
+   `-dev` suffix (e.g. `0.1.2-dev`) so dev builds stay distinguishable from the
+   released binaries. CI tolerates the suffix; step 1 strips it at the next
+   release.
 
 ## Re-cutting a tag
 
