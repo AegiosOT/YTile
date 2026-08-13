@@ -17,12 +17,12 @@
    `scripts/install.ps1` serves users from that release immediately.
 4. Submit the release's winget manifests to
    [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs): download
-   the three `JKUSAS.YTile*.yaml` assets into
-   `manifests/j/JKUSAS/YTile/X.Y.Z/` in a fork and open a PR.
-   (`wingetcreate update JKUSAS.YTile --version X.Y.Z --urls <zip-url>` also
+   the three `AegiosOT.YTile*.yaml` assets into
+   `manifests/a/AegiosOT/YTile/X.Y.Z/` in a fork and open a PR.
+   (`wingetcreate update AegiosOT.YTile --version X.Y.Z --urls <zip-url>` also
    works, but only from the second release onward — `update` requires the
    package to already exist in winget-pkgs.)
-   `winget install JKUSAS.YTile` picks the version up once the PR is merged.
+   `winget install AegiosOT.YTile` picks the version up once the PR is merged.
 5. Back on `main`, bump both `Version` consts to the next patch version with a
    `-dev` suffix (e.g. `0.1.2-dev`) so dev builds stay distinguishable from the
    released binaries. CI tolerates the suffix; step 1 strips it at the next

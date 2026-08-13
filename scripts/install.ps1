@@ -9,7 +9,7 @@
     profile.
 
     Run directly:
-        irm https://raw.githubusercontent.com/JKUSAS/YTile/main/scripts/install.ps1 | iex
+        irm https://raw.githubusercontent.com/AegiosOT/YTile/main/scripts/install.ps1 | iex
 
     Options are read from environment variables, since a piped script takes no
     parameters:
@@ -24,7 +24,7 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Repo       = 'JKUSAS/YTile'
+$Repo       = 'AegiosOT/YTile'
 $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\ytile'
 $ConfigDir  = Join-Path $env:USERPROFILE '.config\ytile'
 $ConfigPath = Join-Path $ConfigDir 'ytile.json'
@@ -67,7 +67,7 @@ function Stop-YTile {
     }
 }
 
-# winget installs YTile too (JKUSAS.YTile); a copy from each channel on PATH is
+# winget installs YTile too (AegiosOT.YTile); a copy from each channel on PATH is
 # a recipe for running a stale binary and thinking it's upgraded.
 function Test-WingetCopy {
     Test-Path (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\ytile.exe')
@@ -145,7 +145,7 @@ if ($env:YTILE_UNINSTALL) {
     Write-Host ''
     Write-Host 'YTile removed.' -ForegroundColor Green
     if (Test-WingetCopy) {
-        Write-Host 'A winget-installed copy of YTile is still present - remove it with: winget uninstall JKUSAS.YTile' -ForegroundColor Yellow
+        Write-Host 'A winget-installed copy of YTile is still present - remove it with: winget uninstall AegiosOT.YTile' -ForegroundColor Yellow
     }
     if (Test-Path $ConfigPath) {
         Write-Host "Your config was left alone at $ConfigPath - delete it by hand if you want it gone." -ForegroundColor DarkGray
@@ -241,7 +241,7 @@ if (Test-WingetCopy) {
     Write-Host ''
     Write-Host 'Note: a winget-installed copy of YTile also exists. Whichever PATH entry was' -ForegroundColor Yellow
     Write-Host 'added first wins in new terminals, so `ytile` may keep running the winget copy.' -ForegroundColor Yellow
-    Write-Host 'Pick one channel: winget uninstall JKUSAS.YTile   (or uninstall this copy instead)' -ForegroundColor Yellow
+    Write-Host 'Pick one channel: winget uninstall AegiosOT.YTile   (or uninstall this copy instead)' -ForegroundColor Yellow
 }
 
 if (-not (Test-Path $ConfigPath)) {
@@ -282,4 +282,4 @@ Write-Host '  ytile --help           all commands'
 Write-Host ''
 Write-Host 'Hotkeys need whkd (https://github.com/LGUG2Z/whkd); see examples/whkdrc-ytile.' -ForegroundColor DarkGray
 Write-Host 'Start both together: ytile start --whkd' -ForegroundColor DarkGray
-Write-Host 'Uninstall: $env:YTILE_UNINSTALL=1; irm https://raw.githubusercontent.com/JKUSAS/YTile/main/scripts/install.ps1 | iex' -ForegroundColor DarkGray
+Write-Host 'Uninstall: $env:YTILE_UNINSTALL=1; irm https://raw.githubusercontent.com/AegiosOT/YTile/main/scripts/install.ps1 | iex' -ForegroundColor DarkGray

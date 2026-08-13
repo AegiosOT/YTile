@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
 # Template — scripts/winget-manifests.ps1 fills the placeholders at release time.
-PackageIdentifier: JKUSAS.YTile
+PackageIdentifier: AegiosOT.YTile
 PackageVersion: {{VERSION}}
 Platform:
 - Windows.Desktop
@@ -17,7 +17,7 @@ Commands:
 - ytiled
 Installers:
 - Architecture: x64
-  InstallerUrl: https://github.com/JKUSAS/YTile/releases/download/v{{VERSION}}/ytile-{{VERSION}}-win-x64.zip
+  InstallerUrl: https://github.com/AegiosOT/YTile/releases/download/v{{VERSION}}/ytile-{{VERSION}}-win-x64.zip
   InstallerSha256: {{SHA256}}
 ReleaseDate: {{RELEASE_DATE}}
 ManifestType: installer
