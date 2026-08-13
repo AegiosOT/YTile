@@ -2,8 +2,9 @@
 
 A tiling window manager for Windows. C#, .NET 10, NativeAOT. Tiling only — no bar, no widgets.
 
-YTile is an independent, from-scratch implementation informed by a behavioral study of
-[komorebi](https://github.com/LGUG2Z/komorebi). No komorebi source code is used or reproduced.
+YTile is an independent, from-scratch implementation informed by a study of
+[komorebi](https://github.com/LGUG2Z/komorebi)'s behavior and architecture. No komorebi code is
+copied into YTile.
 See [docs/komorebi-architecture-digest.md](docs/komorebi-architecture-digest.md) for the study and
 [docs/language-decision.md](docs/language-decision.md) for why C#/NativeAOT and the v0.1 roadmap.
 
