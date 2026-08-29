@@ -160,6 +160,12 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     // can race DWM's cloak-state propagation, so we poke again shortly after.
     private readonly List<(nint Hwnd, long DueMs)> _pendingNudges = [];
 
+    // Windows that reappeared on a hidden workspace, awaiting a settled
+    // re-hide. Cloaking immediately raced fullscreen enters/exits and could
+    // wedge a GPU app's swapchain mid-transition; every further Show/Uncloak
+    // event pushes the deadline out until the window holds still.
+    private readonly Dictionary<nint, long> _pendingRehides = [];
+
     // Deferred re-tiles after cross-monitor moves: the first positioning on a
     // new monitor computes frame margins against the old-DPI frame (the async
     // SetWindowPos hasn't landed), so re-apply once the move settles.
@@ -211,6 +217,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                             VerifyCellFits();
                             CheckDisplayChange();
                             ProcessPendingNudges();
+                            ProcessPendingRehides();
                             ProcessPendingRetiles();
                             break;
                         case WmMessage.DisplayChange:
@@ -437,8 +444,9 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     /// monitors too (docking/undocking may have happened while paused).
     /// Placements are snapshotted first and restored after the adoption pass,
     /// so windows return to their workspaces instead of flattening onto each
-    /// monitor's active one; per-device layout choices survive too. All
-    /// cloaked windows are restored first so the adoption pass can see them.
+    /// monitor's active one; per-device layout choices survive too. The
+    /// adoption pass is allowed to see self-cloaked windows, so hidden
+    /// workspaces stay hidden throughout the rebuild.
     /// </summary>
     private void Resync()
     {
@@ -466,7 +474,15 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             focusSlots[snap.Desc.Device] = slots;
         }
 
-        UncloakAll();
+        // No mass uncloak here: adoption is allowed to see our own cloaked
+        // windows (Eligibility allowCloaked), so hidden workspaces survive the
+        // rebuild without every window strobing visible — that strobe raced
+        // GPU fullscreen transitions and could wedge apps mid-switch. Only
+        // sweep handles that died while hidden so the set stays honest.
+        if (_selfCloaked.RemoveWhere(h => !IsWindowAlive(h)) > 0)
+        {
+            CloakPersistence.Save(_selfCloaked);
+        }
 
         List<MonitorDesc> fresh = MonitorProbe.Enumerate();
         if (fresh.Count > 0)
@@ -539,6 +555,8 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         _focusedMonitor = 0;
         _windowLoc.Clear();
         _pendingRetiles.Clear();
+        // NormalizeCloaks below re-establishes the cloak invariant directly.
+        _pendingRehides.Clear();
         // Any drag in flight when we paused swallowed its MOVESIZEEND — don't
         // carry the exclusion into the new generation of state.
         _dragHwnd = 0;
@@ -656,9 +674,35 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             _focusedMonitor = fgLoc.M;
         }
 
-        // Everything is uncloaked right now — hide what belongs to inactive
-        // workspaces again, and treat foreground bounces off that cloak batch
-        // as churn, not the user asking to follow.
+        // A window we had hidden but did not re-manage (a reloaded rule now
+        // ignores it, or eligibility changed) must not stay invisible forever.
+        // Bookkeeping is dropped only after the uncloak verifiably succeeds:
+        // an orphan is unmanaged, so nothing else (NormalizeCloaks, workspace
+        // switches) will ever retry it — only the next resync or the next
+        // start's crash-insurance pass can, and both need the record intact.
+        foreach (nint orphan in _selfCloaked.Where(h => !_windowLoc.ContainsKey(h)).ToList())
+        {
+            Log($"0x{orphan:X8} no longer managed — restoring");
+            if (dryRun)
+            {
+                continue;
+            }
+            // One retry — the cross-process shell call can fail transiently.
+            if (CloakControl.SetCloak(orphan, false) || CloakControl.SetCloak(orphan, false))
+            {
+                _selfCloaked.Remove(orphan);
+                CloakPersistence.Save(_selfCloaked);
+            }
+            else
+            {
+                Log($"FAILED to restore 0x{orphan:X8} — kept in the recovery file");
+            }
+        }
+
+        // Reconcile cloak state with the rebuilt model: newly hidden windows
+        // get cloaked, newly visible ones uncloaked, everything already
+        // correct is left untouched (no events, no strobe). Foreground
+        // bounces off that batch are churn, not the user asking to follow.
         NormalizeCloaks();
         _cloakChurnUntilMs = Environment.TickCount64 + 1500;
     }
@@ -685,10 +729,15 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                     // hangs over the visible one at a stale size forever —
                     // and NormalizeCloak won't touch it, because as far as
                     // _selfCloaked knows it is already hidden. Force it back
-                    // under. (If it also took foreground, the focus path
-                    // follows it to its workspace instead.)
-                    Log($"0x{e.Hwnd:X8} reappeared on hidden workspace {showLoc.W + 1} — re-hiding");
-                    CloakWin(e.Hwnd);
+                    // under — but only once it stops transitioning: cloaking
+                    // instantly could land mid fullscreen-exit and wedge a
+                    // GPU swapchain. (If it takes foreground meanwhile, the
+                    // focus path follows it to its workspace instead.)
+                    if (!_pendingRehides.ContainsKey(e.Hwnd))
+                    {
+                        Log($"0x{e.Hwnd:X8} reappeared on hidden workspace {showLoc.W + 1} — re-hiding once it settles");
+                    }
+                    _pendingRehides[e.Hwnd] = Environment.TickCount64 + 900;
                 }
                 break;
 
@@ -886,11 +935,15 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         }
 
         var snapshot = WindowSnapshot.Capture(hwnd);
-        if (snapshot.ProcessId == _ownPid || !snapshot.Visible || snapshot.Iconic)
+        // Self-hidden windows bypass both visibility gates: a DWM cloak keeps
+        // WS_VISIBLE (Eligibility's Cloaked check), but the SW_HIDE fallback
+        // clears it — either way the window is ours and must re-adopt.
+        bool selfHidden = _selfCloaked.Contains(hwnd);
+        if (snapshot.ProcessId == _ownPid || (!snapshot.Visible && !selfHidden) || snapshot.Iconic)
         {
             return false;
         }
-        if (Eligibility.SkipReason(in snapshot) is not null)
+        if (Eligibility.SkipReason(in snapshot, allowCloaked: selfHidden) is not null)
         {
             return false;
         }
@@ -959,6 +1012,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         {
             CloakPersistence.Save(_selfCloaked);
         }
+        _pendingRehides.Remove(hwnd);
 
         MonitorCtx mc = _monitors[loc.M];
         Workspace ws = mc.Workspaces[loc.W];
@@ -1333,6 +1387,51 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             {
                 WindowPositioner.Nudge(hwnd);
             }
+        }
+    }
+
+    /// <summary>Re-hides settled hidden-workspace reappearances (see the
+    /// Show/Uncloak handler). Conditions are re-checked at cloak time — the
+    /// window may have died, moved, or become the user's foreground since.</summary>
+    private void ProcessPendingRehides()
+    {
+        if (_paused || _pendingRehides.Count == 0)
+        {
+            return;
+        }
+
+        long now = Environment.TickCount64;
+        List<nint>? due = null;
+        foreach ((nint hwnd, long dueMs) in _pendingRehides)
+        {
+            if (now >= dueMs)
+            {
+                (due ??= []).Add(hwnd);
+            }
+        }
+
+        foreach (nint hwnd in due ?? [])
+        {
+            if (!IsWindowAlive(hwnd)
+                || !_windowLoc.TryGetValue(hwnd, out (int M, int W) loc)
+                || loc.W == _monitors[loc.M].Active)
+            {
+                // Dead, unmanaged, or now on the visible workspace.
+                _pendingRehides.Remove(hwnd);
+                continue;
+            }
+            if (hwnd == ForegroundHwnd())
+            {
+                // In use — retry once focus moves on. Dropping instead would
+                // leave it hovering over the visible workspace forever.
+                _pendingRehides[hwnd] = now + 900;
+                continue;
+            }
+            _pendingRehides.Remove(hwnd);
+            // No _selfCloaked gate: the canonical case IS still in the set
+            // (the app un-hid itself; the set records our intent, not the OS
+            // state). CloakWin is idempotent and re-asserts the real cloak.
+            CloakWin(hwnd);
         }
     }
 

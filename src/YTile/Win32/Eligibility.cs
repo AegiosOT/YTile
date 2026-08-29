@@ -9,8 +9,11 @@ namespace YTile.Win32;
 /// </summary>
 internal static class Eligibility
 {
-    /// <summary>Null means the window would be tiled; otherwise why not.</summary>
-    public static string? SkipReason(in WindowSnapshot w)
+    /// <summary>Null means the window would be tiled; otherwise why not.
+    /// <paramref name="allowCloaked"/> lets a resync re-adopt windows the
+    /// manager itself is keeping cloaked on hidden workspaces — without it
+    /// they would have to be made visible first just to pass this check.</summary>
+    public static string? SkipReason(in WindowSnapshot w, bool allowCloaked = false)
     {
         if (!w.IsAlive)
         {
@@ -20,7 +23,7 @@ internal static class Eligibility
         {
             return "no title";
         }
-        if (w.Cloaked)
+        if (w.Cloaked && !allowCloaked)
         {
             return "cloaked";
         }
