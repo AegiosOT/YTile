@@ -17,6 +17,10 @@ jobs:
     runs-on: windows-latest
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      # Empty until the SignPath Foundation application is approved and the
+      # secret is added; every signing step is skipped while it is empty, so
+      # releases ship unsigned rather than failing.
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,11 +36,14 @@ jobs:
 
       # Separate steps: pwsh run blocks only propagate the LAST command's exit
       # code, which would let a failed ytiled publish slip through to Smoke-test.
+      # -p:Version stamps the PE version resource from the tag; SignPath's
+      # artifact configuration restricts signing on the PE product name
+      # (Product=YTile), and the smoke test below enforces the version.
       - name: Publish ytiled (NativeAOT)
-        run: dotnet publish src/YTile -r win-x64 -c Release -o publish
+        run: dotnet publish src/YTile -r win-x64 -c Release -o publish -p:Version=$($env:TAG.TrimStart('v'))
 
       - name: Publish ytile (NativeAOT)
-        run: dotnet publish src/YTile.Cli -r win-x64 -c Release -o publish
+        run: dotnet publish src/YTile.Cli -r win-x64 -c Release -o publish -p:Version=$($env:TAG.TrimStart('v'))
 
       # A binary that cannot report its own version — or reports one that does
       # not match the tag — is not shippable.
@@ -52,20 +59,96 @@ jobs:
             if ($reported -ne "$exe $version") {
               throw "$exe.exe reports '$reported' but the tag says '$exe $version' — bump the Version const before tagging."
             }
+            # The PE version resource must match too — this check is the only
+            # gate enforcing it (SignPath pins only the product name).
+            $pv = (Get-Item "./publish/$exe.exe").VersionInfo.ProductVersion
+            if ($pv -ne $version -and -not $pv.StartsWith("$version+")) {
+              throw "$exe.exe PE ProductVersion is '$pv', expected '$version' — was -p:Version dropped from the publish step?"
+            }
           }
+
+      # --- Code signing (SignPath Foundation) -------------------------------
+      # Signs ytiled.exe and ytile.exe in place before anything downstream
+      # (zip, checksums, winget manifests) sees them. The submit step blocks
+      # until the signing request is manually approved at app.signpath.io —
+      # that approval is a SignPath Foundation requirement, not a choice.
+      # Setup runbook: packaging/signpath/README.md.
+      - name: Upload unsigned binaries
+        if: env.SIGNPATH_API_TOKEN != ''
+        id: unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-binaries
+          path: |
+            publish/ytiled.exe
+            publish/ytile.exe
+          retention-days: 1
+
+      - name: Sign binaries (SignPath)
+        if: env.SIGNPATH_API_TOKEN != ''
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ env.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ytile
+          signing-policy-slug: release-signing
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          # Leave time for a human to approve the request in the SignPath UI.
+          wait-for-completion-timeout-in-seconds: '3600'
+          output-artifact-directory: publish/signed
+
+      - name: Replace binaries with signed ones
+        if: env.SIGNPATH_API_TOKEN != ''
+        run: |
+          Copy-Item publish/signed/ytiled.exe, publish/signed/ytile.exe -Destination publish -Force
+          $version = $env:TAG.TrimStart('v')
+          foreach ($exe in 'ytiled', 'ytile') {
+            $sig = Get-AuthenticodeSignature "publish/$exe.exe"
+            if ($sig.Status -ne 'Valid') {
+              throw "$exe.exe signature status is $($sig.Status)"
+            }
+            Write-Host "$exe.exe signed by: $($sig.SignerCertificate.Subject)"
+            # Signing must not have broken the binary.
+            $reported = (& "./publish/$exe.exe" --version) -join ''
+            if ($LASTEXITCODE -ne 0 -or $reported -ne "$exe $version") {
+              throw "$exe.exe failed to run after signing (reported '$reported')"
+            }
+          }
+      # ----------------------------------------------------------------------
+
+      # ykeys is its own project (github.com/AegiosOT/YKeys) but ships inside
+      # the YTile zip so hotkeys work out of the box. Pinned by version AND
+      # hash: a retagged upstream release must fail loudly here, not ship.
+      - name: Bundle ykeys
+        env:
+          YKEYS_VERSION: '0.1.1'
+          YKEYS_SHA256: 391ddc0c9066dce5bab0b59876569e39a62829fc5a6572432827375fa81b61c6
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest "https://github.com/AegiosOT/YKeys/releases/download/v$env:YKEYS_VERSION/ykeys.exe" -OutFile publish/ykeys.exe
+          $hash = (Get-FileHash publish/ykeys.exe -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:YKEYS_SHA256) {
+            throw "ykeys.exe hash mismatch: got $hash, pinned $env:YKEYS_SHA256"
+          }
+          $reported = (& ./publish/ykeys.exe --version) -join ''
+          if ($LASTEXITCODE -ne 0 -or $reported -ne "ykeys $env:YKEYS_VERSION") {
+            throw "bundled ykeys.exe reports '$reported', expected 'ykeys $env:YKEYS_VERSION'"
+          }
+          Write-Host "bundled $reported ($hash)"
 
       # The zip is the winget installer asset (InstallerType: zip, nested portable).
       - name: Package zip
         run: |
           $version = $env:TAG.TrimStart('v')
-          Compress-Archive -Path publish/ytiled.exe, publish/ytile.exe, LICENSE -DestinationPath "publish/ytile-$version-win-x64.zip"
+          Compress-Archive -Path publish/ytiled.exe, publish/ytile.exe, publish/ykeys.exe, LICENSE -DestinationPath "publish/ytile-$version-win-x64.zip"
 
       # The installer refuses to install a binary whose hash does not match.
       - name: Checksums
         run: |
           $version = $env:TAG.TrimStart('v')
           cd publish
-          Get-FileHash ytiled.exe, ytile.exe, "ytile-$version-win-x64.zip" -Algorithm SHA256 |
+          Get-FileHash ytiled.exe, ytile.exe, ykeys.exe, "ytile-$version-win-x64.zip" -Algorithm SHA256 |
             ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
             Set-Content SHA256SUMS.txt -Encoding ascii
           Get-Content SHA256SUMS.txt
@@ -86,6 +169,7 @@ jobs:
           $assets = @(
             'publish/ytiled.exe'
             'publish/ytile.exe'
+            'publish/ykeys.exe'
             "publish/ytile-$version-win-x64.zip"
             'publish/SHA256SUMS.txt'
           ) + (Get-ChildItem publish/winget/*.yaml).FullName
@@ -94,6 +178,9 @@ jobs:
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $env:TAG @assets --clobber
+            # A failed upload must not be masked by the edit below going green —
+            # that would publish a release whose assets are missing or stale.
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             # A cancelled create can orphan a DRAFT release, which `view` still
             # finds; drafts serve no assets and hide from /releases/latest.
             gh release edit $env:TAG --draft=false

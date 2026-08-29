@@ -15,6 +15,12 @@
     <EnableAotAnalyzer>true</EnableAotAnalyzer>
     <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!-- PE version resources. Release CI passes -p:Version=X.Y.Z from the tag;
+         SignPath's artifact configuration restricts signing on the product
+         name, so Product must stay set and match it. -->
+    <Product>YTile</Product>
+    <Company>AegiosOT</Company>
+    <Copyright>© AegiosOT — GPL-3.0</Copyright>
   </PropertyGroup>
 
   <ItemGroup>

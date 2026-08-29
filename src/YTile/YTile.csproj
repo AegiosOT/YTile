@@ -4,6 +4,7 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>ytiled</AssemblyName>
     <RootNamespace>YTile</RootNamespace>
+    <AssemblyTitle>YTile daemon</AssemblyTitle>
     <PublishAot>true</PublishAot>
     <OptimizationPreference>Speed</OptimizationPreference>
     <!-- Long-running desktop daemon: workstation GC, background collection. -->

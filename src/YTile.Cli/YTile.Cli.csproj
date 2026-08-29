@@ -4,6 +4,7 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>ytile</AssemblyName>
     <RootNamespace>YTile.Cli</RootNamespace>
+    <AssemblyTitle>YTile CLI</AssemblyTitle>
     <!-- Hotkey-driven: CLI startup latency is a product metric, AOT is mandatory. -->
     <PublishAot>true</PublishAot>
     <OptimizationPreference>Speed</OptimizationPreference>
