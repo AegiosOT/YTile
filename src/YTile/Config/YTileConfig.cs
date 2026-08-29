@@ -10,7 +10,9 @@ internal sealed record RuleDto(string? Match, string? Pattern, string? Strategy,
 
 internal sealed record ConfigDto(int? Gap, string? FocusBorderColor, string? DefaultLayout, int? ResizeStep, bool? HideTaskbar, List<RuleDto>? Rules);
 
-[JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+// AllowDuplicateProperties = false: a duplicated property anywhere in
+// ytile.json must be a reported config error, not a silent last-one-wins.
+[JsonSourceGenerationOptions(PropertyNameCaseInsensitive = true, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, AllowDuplicateProperties = false)]
 [JsonSerializable(typeof(ConfigDto))]
 internal sealed partial class ConfigJsonContext : JsonSerializerContext;
 

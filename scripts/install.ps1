@@ -16,6 +16,8 @@
         $env:YTILE_AUTOSTART = 1    also register YTile to start at login
         $env:YTILE_START     = 1    start the daemon when the install finishes
         $env:YTILE_VERSION   = v0.1.0   install a specific tag (default: latest)
+        $env:YTILE_HOTKEYS   = ykeys|whkd|none   hotkey daemon `ytile start` and
+                                    autostart bring up (default: ykeys, bundled)
         $env:YTILE_UNINSTALL = 1    remove YTile instead of installing it
 #>
 [CmdletBinding()]
@@ -31,6 +33,10 @@ $ConfigPath = Join-Path $ConfigDir 'ytile.json'
 $StateDir   = Join-Path $env:LOCALAPPDATA 'ytile'
 $RunKey     = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $Binaries   = @('ytiled.exe', 'ytile.exe')
+# Bundled from its own repo (github.com/AegiosOT/YKeys); releases up to v0.1.1
+# predate it, so it is verified when present rather than required.
+$OptionalBinaries = @('ykeys.exe')
+$YKeysConfigPath  = Join-Path $env:USERPROFILE '.config\ykeys\ykeys.json'
 
 function Write-Step($msg) { Write-Host "  $msg" }
 function Write-Head($msg) { Write-Host ''; Write-Host $msg -ForegroundColor Cyan }
@@ -65,6 +71,21 @@ function Stop-YTile {
         $alive | Stop-Process -Force -Confirm:$false -ErrorAction SilentlyContinue
         Start-Sleep -Milliseconds 300
     }
+}
+
+function Stop-YKeys {
+    # ykeys has no IPC; its exe is locked while running, which blocks both
+    # upgrade overwrite and uninstall delete. Only the copy running from OUR
+    # install dir: YKeys is also a standalone product, and someone else's
+    # instance is not ours to kill. (Path is $null for processes we cannot
+    # query, e.g. elevated ones - those are skipped, as Stop-Process would
+    # fail on them anyway.)
+    $bundled = Join-Path $InstallDir 'ykeys.exe'
+    $procs = @(Get-Process ykeys -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $bundled })
+    if (-not $procs) { return }
+    Write-Step 'stopping ykeys (its exe is locked while it runs)'
+    $procs | Stop-Process -Force -Confirm:$false -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 300
 }
 
 # winget installs YTile too (AegiosOT.YTile); a copy from each channel on PATH is
@@ -129,16 +150,29 @@ function Remove-FromUserPath($dir) {
 if ($env:YTILE_UNINSTALL) {
     Write-Head 'Uninstalling YTile'
     Stop-YTile
+    Stop-YKeys
 
     if (Get-ItemProperty -Path $RunKey -Name YTile -ErrorAction SilentlyContinue) {
         Remove-ItemProperty -Path $RunKey -Name YTile
         Write-Step 'removed the autostart entry'
     }
     Remove-FromUserPath $InstallDir
-    foreach ($dir in @($InstallDir, $StateDir)) {
+    $dirs = @($InstallDir, $StateDir)
+    # %LOCALAPPDATA%\ykeys belongs to whichever ykeys is in use; leave it to a
+    # still-running standalone instance (ours was stopped above).
+    if (-not (Get-Process ykeys -ErrorAction SilentlyContinue)) {
+        $dirs += Join-Path $env:LOCALAPPDATA 'ykeys'
+    }
+    foreach ($dir in $dirs) {
         if (Test-Path $dir) {
-            Remove-Item $dir -Recurse -Force -Confirm:$false
-            Write-Step "deleted $dir"
+            # Non-fatal: a locked file must not abort the uninstall halfway,
+            # after the Run key and PATH entry are already gone.
+            try {
+                Remove-Item $dir -Recurse -Force -Confirm:$false -ErrorAction Stop
+                Write-Step "deleted $dir"
+            } catch {
+                Write-Host "  could not delete $dir - remove it by hand" -ForegroundColor Yellow
+            }
         }
     }
 
@@ -149,6 +183,9 @@ if ($env:YTILE_UNINSTALL) {
     }
     if (Test-Path $ConfigPath) {
         Write-Host "Your config was left alone at $ConfigPath - delete it by hand if you want it gone." -ForegroundColor DarkGray
+    }
+    if (Test-Path $YKeysConfigPath) {
+        Write-Host "Your hotkey config was left alone at $YKeysConfigPath." -ForegroundColor DarkGray
     }
     # A lingering flag would turn the next install one-liner pasted into this
     # window into another uninstall.
@@ -163,6 +200,24 @@ Write-Head 'Installing YTile'
 if ([Environment]::Is64BitOperatingSystem -eq $false) {
     throw 'YTile ships x64 binaries only.'
 }
+
+# Which hotkey daemon `ytile start` / autostart should bring up.
+$hotkeys = if ($env:YTILE_HOTKEYS) { $env:YTILE_HOTKEYS.ToLower() } else {
+    # A plain upgrade must not switch a whkd setup to ykeys: preserve the
+    # flavor already in use — a whkd running in this session, or an autostart
+    # entry registered with --whkd, marks a whkd install.
+    $entry  = Get-ItemProperty -Path $RunKey -Name YTile -ErrorAction SilentlyContinue
+    $runCmd = if ($entry) { [string]$entry.YTile } else { '' }
+    $sessionWhkd = @(Get-Process whkd -ErrorAction SilentlyContinue |
+        Where-Object { $_.SessionId -eq (Get-Process -Id $PID).SessionId })
+    if ($sessionWhkd -or $runCmd -match '--whkd') { 'whkd' }
+    elseif ($runCmd -match '--no-hotkeys') { 'none' }
+    else { 'ykeys' }
+}
+if ($hotkeys -notin @('ykeys', 'whkd', 'none')) {
+    throw "YTILE_HOTKEYS must be ykeys, whkd, or none (got '$env:YTILE_HOTKEYS')."
+}
+$hotkeyFlag = switch ($hotkeys) { 'whkd' { '--whkd' } 'none' { '--no-hotkeys' } default { $null } }
 
 # Resolve the release to install.
 $tag = $env:YTILE_VERSION
@@ -185,6 +240,17 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 # back afterwards, or the one-liner upgrade leaves the user without tiling.
 $wasRunning = [bool](Get-Process ytiled -ErrorAction SilentlyContinue)
 Stop-YTile
+Stop-YKeys
+
+# Older releases have no ykeys.exe asset; verify it when present, skip otherwise.
+$names = @($Binaries)
+foreach ($name in $OptionalBinaries) {
+    if ($release.assets | Where-Object { $_.name -eq $name }) {
+        $names += $name
+    } else {
+        Write-Step "release $($release.tag_name) predates $name - skipping it"
+    }
+}
 
 # Download to a temp dir first so a failed download cannot leave a half-installed
 # directory behind.
@@ -196,7 +262,7 @@ New-Item -ItemType Directory -Force -Path $staging | Out-Null
 $oldProgressPreference = $ProgressPreference
 $ProgressPreference = 'SilentlyContinue'
 try {
-    foreach ($name in $Binaries) {
+    foreach ($name in $names) {
         $asset = $release.assets | Where-Object { $_.name -eq $name } | Select-Object -First 1
         if (-not $asset) { throw "Release $($release.tag_name) has no asset named $name." }
         Write-Step "downloading $name"
@@ -214,7 +280,7 @@ try {
     foreach ($line in (Invoke-WebRequest -Uri $sums.browser_download_url -UseBasicParsing).Content -split "`n") {
         if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(\S+)\s*$') { $expected[$matches[2]] = $matches[1].ToLower() }
     }
-    foreach ($name in $Binaries) {
+    foreach ($name in $names) {
         if (-not $expected.ContainsKey($name)) {
             throw "SHA256SUMS.txt in release $($release.tag_name) has no entry for $name - refusing to install unverified."
         }
@@ -224,7 +290,7 @@ try {
         }
     }
 
-    foreach ($name in $Binaries) {
+    foreach ($name in $names) {
         Copy-Item (Join-Path $staging $name) (Join-Path $InstallDir $name) -Force
     }
     Write-Step "installed to $InstallDir"
@@ -264,12 +330,63 @@ if (-not (Test-Path $ConfigPath)) {
     Write-Step "kept your existing config at $ConfigPath"
 }
 
+if ($hotkeys -eq 'ykeys') {
+    if (-not (Test-Path $YKeysConfigPath)) {
+        New-Item -ItemType Directory -Force -Path (Split-Path $YKeysConfigPath) | Out-Null
+        @'
+{
+  "hotkeys": {
+    "alt+h": "ytile focus left",
+    "alt+j": "ytile focus down",
+    "alt+k": "ytile focus up",
+    "alt+l": "ytile focus right",
+
+    "alt+shift+h": "ytile move left",
+    "alt+shift+j": "ytile move down",
+    "alt+shift+k": "ytile move up",
+    "alt+shift+l": "ytile move right",
+
+    "alt+1": "ytile workspace 1",
+    "alt+2": "ytile workspace 2",
+    "alt+3": "ytile workspace 3",
+    "alt+4": "ytile workspace 4",
+    "alt+shift+1": "ytile send 1",
+    "alt+shift+2": "ytile send 2",
+    "alt+shift+3": "ytile send 3",
+    "alt+shift+4": "ytile send 4",
+
+    "alt+plus": "ytile resize right",
+    "alt+minus": "ytile resize right -50",
+    "alt+shift+plus": "ytile resize down",
+    "alt+shift+minus": "ytile resize down -50",
+
+    "alt+t": "ytile float",
+    "alt+b": "ytile layout bsp",
+    "alt+c": "ytile layout columns",
+    "alt+r": "ytile retile",
+    "alt+p": "ytile pause",
+    "alt+shift+p": "ytile resume"
+  }
+}
+'@ | Set-Content -Path $YKeysConfigPath -Encoding UTF8
+        Write-Step "wrote starter hotkeys to $YKeysConfigPath"
+    } else {
+        Write-Step "kept your existing hotkeys at $YKeysConfigPath"
+    }
+}
+
 if ($env:YTILE_AUTOSTART) {
-    & (Join-Path $InstallDir 'ytile.exe') autostart on
+    $autostartArgs = @('autostart', 'on') + @($hotkeyFlag | Where-Object { $_ })
+    & (Join-Path $InstallDir 'ytile.exe') @autostartArgs
+    # Native nonzero exits do not throw under EAP=Stop; an older pinned release
+    # rejecting a hotkey flag must not masquerade as a successful install.
+    if ($LASTEXITCODE) { throw "ytile $($autostartArgs -join ' ') failed (exit $LASTEXITCODE) - release $($release.tag_name) may predate the '$hotkeys' hotkey option." }
 }
 
 if ($env:YTILE_START -or $wasRunning) {
-    & (Join-Path $InstallDir 'ytile.exe') start
+    $startArgs = @('start') + @($hotkeyFlag | Where-Object { $_ })
+    & (Join-Path $InstallDir 'ytile.exe') @startArgs
+    if ($LASTEXITCODE) { throw "ytile $($startArgs -join ' ') failed (exit $LASTEXITCODE) - release $($release.tag_name) may predate the '$hotkeys' hotkey option." }
 }
 
 Write-Host ''
@@ -280,6 +397,6 @@ Write-Host '  ytile autostart on     start it at every login'
 Write-Host '  ytile state            show monitors, workspaces and windows'
 Write-Host '  ytile --help           all commands'
 Write-Host ''
-Write-Host 'Hotkeys need whkd (https://github.com/LGUG2Z/whkd); see examples/whkdrc-ytile.' -ForegroundColor DarkGray
-Write-Host 'Start both together: ytile start --whkd' -ForegroundColor DarkGray
+Write-Host 'Hotkeys: the bundled ykeys daemon starts with `ytile start`; bindings live in ~/.config/ykeys/ykeys.json.' -ForegroundColor DarkGray
+Write-Host 'Prefer whkd (https://github.com/LGUG2Z/whkd)? Use: ytile start --whkd  (see examples/whkdrc-ytile)' -ForegroundColor DarkGray
 Write-Host 'Uninstall: $env:YTILE_UNINSTALL=1; irm https://raw.githubusercontent.com/AegiosOT/YTile/main/scripts/install.ps1 | iex' -ForegroundColor DarkGray

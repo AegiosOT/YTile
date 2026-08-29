@@ -12,9 +12,12 @@ NestedInstallerFiles:
   PortableCommandAlias: ytile
 - RelativeFilePath: ytiled.exe
   PortableCommandAlias: ytiled
+- RelativeFilePath: ykeys.exe
+  PortableCommandAlias: ykeys
 Commands:
 - ytile
 - ytiled
+- ykeys
 Installers:
 - Architecture: x64
   InstallerUrl: https://github.com/AegiosOT/YTile/releases/download/v{{VERSION}}/ytile-{{VERSION}}-win-x64.zip

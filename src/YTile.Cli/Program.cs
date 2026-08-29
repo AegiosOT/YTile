@@ -91,25 +91,50 @@ internal static class Program
     private static readonly string LogPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ytile", "ytiled.log");
 
+    private static readonly string YKeysLogPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ykeys", "ykeys.log");
+
+    private enum HotkeyDaemon
+    {
+        YKeys,
+        Whkd,
+        None,
+    }
+
+    private static bool StartHotkeys(HotkeyDaemon choice) => choice switch
+    {
+        HotkeyDaemon.Whkd => StartWhkd(),
+        HotkeyDaemon.YKeys => StartYKeys(),
+        _ => true,
+    };
+
     /// <summary>Launches ytiled.exe detached with no visible console, logging to
     /// %LOCALAPPDATA%\ytile\ytiled.log, and waits for its IPC pipe to appear.
-    /// --whkd also brings up the whkd hotkey daemon alongside it.</summary>
+    /// The bundled ykeys hotkey daemon comes up alongside it by default;
+    /// --whkd starts whkd instead, --no-hotkeys starts neither.</summary>
     private static int Start(string[] extraArgs)
     {
-        bool withWhkd = false;
+        var hotkeys = HotkeyDaemon.YKeys;
         var daemonArgs = new List<string>();
         foreach (string a in extraArgs)
         {
             switch (a)
             {
+                case "--whkd" when hotkeys is HotkeyDaemon.None:
+                case "--no-hotkeys" when hotkeys is HotkeyDaemon.Whkd:
+                    Console.Error.WriteLine("ytile: --whkd and --no-hotkeys are mutually exclusive");
+                    return 2;
                 case "--whkd":
-                    withWhkd = true;
+                    hotkeys = HotkeyDaemon.Whkd;
+                    break;
+                case "--no-hotkeys":
+                    hotkeys = HotkeyDaemon.None;
                     break;
                 case "--force" or "--dry-run":
                     daemonArgs.Add(a);
                     break;
                 default:
-                    Console.Error.WriteLine("usage: ytile start [--force] [--dry-run] [--whkd]");
+                    Console.Error.WriteLine("usage: ytile start [--force] [--dry-run] [--whkd|--no-hotkeys]");
                     return 2;
             }
         }
@@ -117,12 +142,9 @@ internal static class Program
         if (File.Exists(@"\\.\pipe\ytile"))
         {
             Console.Error.WriteLine("ytile: ytiled is already running.");
-            // Still honor --whkd: after a crash or manual kill of whkd alone,
-            // `ytile start --whkd` is the natural "bring everything up" retry.
-            if (withWhkd)
-            {
-                StartWhkd();
-            }
+            // Still bring the hotkey daemon up: after a crash or manual kill of
+            // it alone, `ytile start` is the natural "bring everything up" retry.
+            StartHotkeys(hotkeys);
             return 1;
         }
 
@@ -169,27 +191,36 @@ internal static class Program
             if (File.Exists(@"\\.\pipe\ytile"))
             {
                 Console.WriteLine($"ytiled started (pid {proc.Id}), logging to {LogPath}");
-                return withWhkd && !StartWhkd() ? 1 : 0;
+                return StartHotkeys(hotkeys) ? 0 : 1;
             }
         }
 
         Console.WriteLine($"ytiled launched (pid {proc.Id}) but its pipe hasn't appeared yet — check {LogPath}");
-        return withWhkd && !StartWhkd() ? 1 : 0;
+        return StartHotkeys(hotkeys) ? 0 : 1;
     }
 
-    /// <summary>Sends stop to the daemon; --whkd also kills the whkd hotkey
-    /// daemon, the counterpart of `ytile start --whkd`.</summary>
+    /// <summary>Sends stop to the daemon and takes the bundled ykeys down with
+    /// it; --whkd also kills the whkd hotkey daemon (the counterpart of
+    /// `ytile start --whkd`), --no-hotkeys leaves hotkey daemons alone — the
+    /// counterpart of `start --no-hotkeys` for people running their own ykeys.</summary>
     private static int Stop(string[] extraArgs)
     {
         bool withWhkd = false;
+        bool noHotkeys = false;
         foreach (string a in extraArgs)
         {
-            if (a is not "--whkd")
+            switch (a)
             {
-                Console.Error.WriteLine("usage: ytile stop [--whkd]");
-                return 2;
+                case "--whkd":
+                    withWhkd = true;
+                    break;
+                case "--no-hotkeys":
+                    noHotkeys = true;
+                    break;
+                default:
+                    Console.Error.WriteLine("usage: ytile stop [--whkd|--no-hotkeys]");
+                    return 2;
             }
-            withWhkd = true;
         }
 
         int rc = 0;
@@ -208,8 +239,13 @@ internal static class Program
             Console.WriteLine(reply.Message);
         }
 
-        // Tear whkd down even when the daemon was already gone: `stop --whkd`
-        // means "take it all down", whatever half is still standing.
+        // Tear the hotkey daemons down even when the daemon was already gone:
+        // `stop` means "take it all down", whatever half is still standing.
+        // ykeys is ours by default, whkd only when asked for.
+        if (!noHotkeys && !StopYKeys())
+        {
+            rc = 1;
+        }
         if (withWhkd && !StopWhkd())
         {
             rc = 1;
@@ -217,15 +253,15 @@ internal static class Program
         return rc;
     }
 
-    /// <summary>whkd instances in this session only. The keyboard hook is
-    /// per-session, so another user's whkd (fast user switching) neither serves
-    /// this session's hotkeys nor is ours to kill.</summary>
-    private static Process[] SessionWhkdProcesses()
+    /// <summary>Instances of a companion in this session only. Hotkeys are
+    /// per-session, so another user's daemon (fast user switching) neither
+    /// serves this session's keys nor is ours to kill.</summary>
+    private static Process[] SessionProcesses(string name)
     {
         using Process current = Process.GetCurrentProcess();
         int session = current.SessionId;
         var mine = new List<Process>();
-        foreach (Process proc in Process.GetProcessesByName("whkd"))
+        foreach (Process proc in Process.GetProcessesByName(name))
         {
             if (proc.SessionId == session)
             {
@@ -239,6 +275,90 @@ internal static class Program
         return mine.ToArray();
     }
 
+    /// <summary>Launches the bundled ykeys hotkey daemon (hidden) unless one is
+    /// already running in this session. A missing ykeys.exe is a hint, not a
+    /// failure — hotkeys are optional and whkd users won't have it installed.</summary>
+    private static bool StartYKeys()
+    {
+        Process[] running = SessionProcesses("ykeys");
+        if (running.Length > 0)
+        {
+            foreach (Process proc in running)
+            {
+                proc.Dispose();
+            }
+            Console.WriteLine("ykeys already running");
+            return true;
+        }
+
+        // Prefer the ykeys that ships next to this CLI; fall back to PATH.
+        string sibling = Path.Combine(AppContext.BaseDirectory, "ykeys.exe");
+        try
+        {
+            Process? launched = Process.Start(new ProcessStartInfo
+            {
+                FileName = File.Exists(sibling) ? sibling : "ykeys.exe",
+                Arguments = "--log",
+                UseShellExecute = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+            });
+            if (launched is not null)
+            {
+                using (launched)
+                {
+                    // ykeys runs fine without a config (no bindings yet), so an
+                    // immediate exit means something is genuinely wrong.
+                    Thread.Sleep(400);
+                    if (launched.HasExited)
+                    {
+                        Console.Error.WriteLine($"ytile: ykeys exited immediately — see {YKeysLogPath}");
+                        return false;
+                    }
+                }
+            }
+        }
+        // Only a genuine not-found is a soft skip; access-denied (AV block),
+        // bad image, and the like must fail loudly, not claim "not found".
+        catch (Exception ex) when (ex is FileNotFoundException or System.ComponentModel.Win32Exception { NativeErrorCode: 2 })
+        {
+            Console.WriteLine(
+                "ytile: ykeys.exe not found — hotkeys off (reinstall YTile, use --whkd, or --no-hotkeys to silence this)");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"ytile: cannot start ykeys — {ex.Message}");
+            return false;
+        }
+
+        Console.WriteLine($"ykeys started (config: ~/.config/ykeys/ykeys.json, log: {YKeysLogPath})");
+        return true;
+    }
+
+    /// <summary>ykeys has no IPC; kill is the stop. Quiet when none is running —
+    /// whkd users see no noise from the default stop path.</summary>
+    private static bool StopYKeys()
+    {
+        bool ok = true;
+        foreach (Process proc in SessionProcesses("ykeys"))
+        {
+            using (proc)
+            {
+                try
+                {
+                    proc.Kill();
+                    Console.WriteLine($"ykeys stopped (pid {proc.Id})");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"ytile: cannot stop ykeys (pid {proc.Id}) — {ex.Message}");
+                    ok = false;
+                }
+            }
+        }
+        return ok;
+    }
+
     /// <summary>Launches whkd with a hidden window unless it is already running
     /// in this session. UseShellExecute keeps our stdio handles out of it: a
     /// redirected pipe nobody drains would block whkd's own logging, and an
@@ -246,7 +366,7 @@ internal static class Program
     /// life. Returns false when whkd could not be brought up.</summary>
     private static bool StartWhkd()
     {
-        Process[] running = SessionWhkdProcesses();
+        Process[] running = SessionProcesses("whkd");
         if (running.Length > 0)
         {
             foreach (Process proc in running)
@@ -300,7 +420,7 @@ internal static class Program
     /// state, not a failure.</summary>
     private static bool StopWhkd()
     {
-        Process[] procs = SessionWhkdProcesses();
+        Process[] procs = SessionProcesses("whkd");
         if (procs.Length == 0)
         {
             Console.WriteLine("whkd not running");
@@ -336,10 +456,10 @@ internal static class Program
     private static int Autostart(string[] args)
     {
         string? mode = args.Length > 0 ? args[0] : null;
-        bool withWhkd = args.Length > 1 && args[1] == "--whkd" && args.Length == 2;
-        if (args.Length > 1 && (!withWhkd || mode is not ("on" or "enable")))
+        string? flag = args.Length == 2 && args[1] is "--whkd" or "--no-hotkeys" ? args[1] : null;
+        if (args.Length > 1 && (flag is null || mode is not ("on" or "enable")))
         {
-            Console.Error.WriteLine("usage: ytile autostart <on [--whkd]|off|status>");
+            Console.Error.WriteLine("usage: ytile autostart <on [--whkd|--no-hotkeys]|off|status>");
             return 2;
         }
 
@@ -349,7 +469,7 @@ internal static class Program
             {
                 string self = Environment.ProcessPath
                     ?? Path.Combine(AppContext.BaseDirectory, "ytile.exe");
-                string command = $"\"{self}\" start{(withWhkd ? " --whkd" : "")}";
+                string command = $"\"{self}\" start{(flag is null ? "" : $" {flag}")}";
                 using RegistryKey key = Registry.CurrentUser.CreateSubKey(RunKeyPath);
                 key.SetValue(RunValueName, command);
                 Console.WriteLine($"autostart on: {command}");
@@ -376,7 +496,7 @@ internal static class Program
                 return 0;
             }
             default:
-                Console.Error.WriteLine("usage: ytile autostart <on [--whkd]|off|status>");
+                Console.Error.WriteLine("usage: ytile autostart <on [--whkd|--no-hotkeys]|off|status>");
                 return 2;
         }
     }
@@ -512,10 +632,12 @@ internal static class Program
 
             usage: ytile <command>
 
-              start [--force] [--dry-run] [--whkd]  launch ytiled in the background
-                                        (--whkd also starts the whkd hotkey daemon;
+              start [--force] [--dry-run] [--whkd|--no-hotkeys]
+                                        launch ytiled in the background plus the
+                                        bundled ykeys hotkey daemon (--whkd uses whkd
+                                        instead, --no-hotkeys skips both;
                                         logs to %LOCALAPPDATA%\ytile\ytiled.log)
-              autostart <on [--whkd]|off|status>  run 'ytile start' automatically at login
+              autostart <on [--whkd|--no-hotkeys]|off|status>  run 'ytile start' at login
               state                     show monitors, workspaces, and windows
               focus <left|right|up|down>   focus that way (crosses monitors at the edge)
               move  <left|right|up|down>   swap focused window that way (crosses monitors)
@@ -531,7 +653,8 @@ internal static class Program
               reload                    reload ~/.config/ytile/ytile.json and resync
               pause                     restore hidden windows, stop reacting
               resume                    resync from the OS and start tiling
-              stop [--whkd]             shut the daemon down (--whkd stops whkd too)
+              stop [--whkd|--no-hotkeys]  shut the daemon and ykeys down (--whkd stops
+                                        whkd too, --no-hotkeys leaves hotkey daemons alone)
               version                   daemon version
             """);
     }

@@ -65,10 +65,13 @@ $env:YTILE_UNINSTALL = 1    # remove YTile (config is left alone)
 ```
 
 Re-run it any time to upgrade — it stops a running daemon first, since the
-binaries are locked while it runs. Hotkeys need
-[whkd](https://github.com/LGUG2Z/whkd) separately; see
-[examples/whkdrc-ytile](examples/whkdrc-ytile). `ytile start --whkd` brings
-both up together (`ytile autostart on --whkd` does the same at login).
+binaries are locked while it runs. Hotkeys come from the bundled
+[YKeys](https://github.com/AegiosOT/YKeys) daemon: `ytile start` brings it up
+automatically with bindings from `~/.config/ykeys/ykeys.json` (a starter is
+written for you). Prefer [whkd](https://github.com/LGUG2Z/whkd)? Set
+`$env:YTILE_HOTKEYS = 'whkd'` before installing, or use `ytile start --whkd`
+(see [examples/whkdrc-ytile](examples/whkdrc-ytile)); `--no-hotkeys` starts
+neither.
 
 ## Building
 
@@ -131,6 +134,21 @@ sets the default amount); `ytile retile` resets all adjustments.
 }
 ```
 
+### Hotkeys
+
+Keys are handled by [YKeys](https://github.com/AegiosOT/YKeys), a separate
+hotkey daemon that ships inside every YTile release and starts with
+`ytile start`. Its config (`~/.config/ykeys/ykeys.json`) maps chords to
+command lines — `"alt+1": "ytile workspace 1"` — and any program can be
+bound, not just ytile. Chord syntax, key names, and details are in the
+[YKeys README](https://github.com/AegiosOT/YKeys#readme); config changes
+apply live, and a chord some other program already owns is skipped with a
+log line in `%LOCALAPPDATA%\ykeys\ykeys.log`.
+
+Prefer [whkd](https://github.com/LGUG2Z/whkd)? `ytile start --whkd` runs it
+instead of ykeys — see [examples/whkdrc-ytile](examples/whkdrc-ytile) — and
+`ytile start --no-hotkeys` runs neither.
+
 ### Hiding the taskbar
 
 `hideTaskbar` (default `false`) hides the shell taskbar outright and tiles over
@@ -152,8 +170,23 @@ in the work area, and layouts follow it.
 Rules match on `exe`/`class`/`title` with `equals` (default), `prefix`, or `regex`
 strategies; actions are `ignore` and `float`. Status bars (komorebi-bar, ybar,
 zebar, yasb) are ignored built-in. `ytile reload` applies changes live.
-Hotkeys: pair with [whkd](https://github.com/LGUG2Z/whkd) — see
-[examples/whkdrc-ytile](examples/whkdrc-ytile).
+
+## Code signing
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/),
+certificate by [SignPath Foundation](https://signpath.org/). Release binaries
+(`ytiled.exe`, `ytile.exe`) are Authenticode-signed by the release CI;
+releases up to v0.1.1 predate the signing setup and are unsigned.
+
+- Committers and reviewers: [AegiosOT](https://github.com/AegiosOT). Pull
+  requests from outside contributors are reviewed by a committer before merging.
+- Approvers: [AegiosOT](https://github.com/AegiosOT) — each release's signing
+  request is approved manually.
+
+This program will not transfer any information to other networked systems
+unless specifically requested by the user or the person installing or
+operating it. (The daemon and CLI talk to each other over a local named pipe
+only; the install script downloads releases from GitHub when you run it.)
 
 ## License
 

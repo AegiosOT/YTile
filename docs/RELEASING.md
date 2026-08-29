@@ -11,10 +11,23 @@
    ```
 
 3. The [Release workflow](../.github/workflows/release.yml) tests, publishes
-   NativeAOT binaries, packages `ytile-X.Y.Z-win-x64.zip` (the winget installer
-   asset), writes `SHA256SUMS.txt`, generates winget manifests with the zip's
-   hash, and creates the GitHub release with everything attached.
+   NativeAOT binaries, signs them via SignPath (see below), bundles
+   `ykeys.exe` from the pinned [YKeys](https://github.com/AegiosOT/YKeys)
+   release, packages `ytile-X.Y.Z-win-x64.zip` (the winget installer asset),
+   writes `SHA256SUMS.txt`, generates winget manifests with the zip's hash,
+   and creates the GitHub release with everything attached.
    `scripts/install.ps1` serves users from that release immediately.
+
+   **To ship a newer ykeys**: release it in the YKeys repo first, then update
+   `YKEYS_VERSION` and `YKEYS_SHA256` (the exe's line from that release's
+   `SHA256SUMS.txt`) in the "Bundle ykeys" step of release.yml. The step
+   fails the release on any mismatch, so a stale pin cannot ship silently.
+
+   **Signing pauses the run**: when it reaches "Sign binaries (SignPath)",
+   approve the signing request at <https://app.signpath.io> within an hour or
+   the release fails. While the `SIGNPATH_API_TOKEN` secret is not configured,
+   the signing steps are skipped and the release ships unsigned — setup and
+   details in [packaging/signpath/README.md](../packaging/signpath/README.md).
 4. Submit the release's winget manifests to
    [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs): download
    the three `AegiosOT.YTile*.yaml` assets into
