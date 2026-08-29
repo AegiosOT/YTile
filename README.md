@@ -206,4 +206,5 @@ only; the install script downloads releases from GitHub when you run it.)
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). (Releases up to v0.1.3 were published under
+GPL-3.0; everything from v0.1.4 on is MIT.)

@@ -19,7 +19,7 @@
          signed binaries carry these as their published metadata. -->
     <Product>YTile</Product>
     <Company>AegiosOT</Company>
-    <Copyright>© AegiosOT — GPL-3.0</Copyright>
+    <Copyright>© AegiosOT — MIT</Copyright>
   </PropertyGroup>
 
   <ItemGroup>

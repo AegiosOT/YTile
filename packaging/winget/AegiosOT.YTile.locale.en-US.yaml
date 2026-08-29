@@ -9,7 +9,7 @@ PublisherSupportUrl: https://github.com/AegiosOT/YTile/issues
 Author: AegiosOT
 PackageName: YTile
 PackageUrl: https://github.com/AegiosOT/YTile
-License: GPL-3.0
+License: MIT
 LicenseUrl: https://github.com/AegiosOT/YTile/blob/main/LICENSE
 ShortDescription: Tiling window manager for Windows
 Description: |-
