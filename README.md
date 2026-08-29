@@ -8,6 +8,8 @@ copied into YTile.
 See [docs/komorebi-architecture-digest.md](docs/komorebi-architecture-digest.md) for the study and
 [docs/language-decision.md](docs/language-decision.md) for why C#/NativeAOT and the v0.1 roadmap.
 
+![Windows tiling automatically as they open](docs/media/tiling.gif)
+
 ## Design pillars
 
 - **Single-actor state.** One thread owns all window-manager state and consumes one message
@@ -32,6 +34,24 @@ rules can force either behaviour. Monitors can be hot-plugged. The Windows
 taskbar can be hidden outright, with the reclaimed strip tiled over. Status bars
 talk to it over a named-pipe NDJSON API they can subscribe to and reserve screen
 edges through ([docs/YTILE-IPC.md](docs/YTILE-IPC.md)).
+
+## In action
+
+Directional focus and moving windows around the layout:
+
+![Focus follows direction; windows swap with move](docs/media/focus.gif)
+
+Keyboard resizing — the new size folds into the layout and survives retiles:
+
+![Growing and shrinking the focused window from the keyboard](docs/media/resize.gif)
+
+Dragging an edge does the same, live:
+
+![Dragging a window edge; the layout folds the change in](docs/media/drag.gif)
+
+Monocle and sending windows between workspaces:
+
+![Monocle toggle, then sending a window to another workspace](docs/media/workspaces.gif)
 
 ## Install
 
