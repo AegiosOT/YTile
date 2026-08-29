@@ -173,15 +173,11 @@ zebar, yasb) are ignored built-in. `ytile reload` applies changes live.
 
 ## Code signing
 
-Free code signing provided by [SignPath.io](https://about.signpath.io/),
-certificate by [SignPath Foundation](https://signpath.org/). Release binaries
-(`ytiled.exe`, `ytile.exe`) are Authenticode-signed by the release CI;
-releases up to v0.1.1 predate the signing setup and are unsigned.
-
-- Committers and reviewers: [AegiosOT](https://github.com/AegiosOT). Pull
-  requests from outside contributors are reviewed by a committer before merging.
-- Approvers: [AegiosOT](https://github.com/AegiosOT) — each release's signing
-  request is approved manually.
+Release binaries are Authenticode-signed by CI via
+[Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/)
+with the maintainer's identity-validated certificate; releases up to v0.1.2
+predate the signing setup and are unsigned. Details in
+[packaging/signing](packaging/signing/README.md).
 
 This program will not transfer any information to other networked systems
 unless specifically requested by the user or the person installing or

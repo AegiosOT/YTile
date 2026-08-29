@@ -11,16 +11,22 @@ on:
 
 permissions:
   contents: write
+  # GitHub OIDC token for the Azure signing login — no stored secrets.
+  id-token: write
 
 jobs:
   release:
     runs-on: windows-latest
+    # The 'release' environment name is baked into the OIDC trust: the signing
+    # managed identity's federated credential only accepts tokens minted for
+    # repo:AegiosOT/YTile:environment:release.
+    environment: release
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
-      # Empty until the SignPath Foundation application is approved and the
-      # secret is added; every signing step is skipped while it is empty, so
-      # releases ship unsigned rather than failing.
-      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+      # Empty until the Azure signing variables are configured on the repo;
+      # every signing step is skipped while it is empty, so releases ship
+      # unsigned rather than failing.
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,9 +42,8 @@ jobs:
 
       # Separate steps: pwsh run blocks only propagate the LAST command's exit
       # code, which would let a failed ytiled publish slip through to Smoke-test.
-      # -p:Version stamps the PE version resource from the tag; SignPath's
-      # artifact configuration restricts signing on the PE product name
-      # (Product=YTile), and the smoke test below enforces the version.
+      # -p:Version stamps the PE version resource from the tag; the smoke test
+      # below enforces it, and the signed binaries carry it as metadata.
       - name: Publish ytiled (NativeAOT)
         run: dotnet publish src/YTile -r win-x64 -c Release -o publish -p:Version=$($env:TAG.TrimStart('v'))
 
@@ -60,48 +65,44 @@ jobs:
               throw "$exe.exe reports '$reported' but the tag says '$exe $version' — bump the Version const before tagging."
             }
             # The PE version resource must match too — this check is the only
-            # gate enforcing it (SignPath pins only the product name).
+            # gate enforcing it.
             $pv = (Get-Item "./publish/$exe.exe").VersionInfo.ProductVersion
             if ($pv -ne $version -and -not $pv.StartsWith("$version+")) {
               throw "$exe.exe PE ProductVersion is '$pv', expected '$version' — was -p:Version dropped from the publish step?"
             }
           }
 
-      # --- Code signing (SignPath Foundation) -------------------------------
+      # --- Code signing (Azure Artifact Signing) ----------------------------
       # Signs ytiled.exe and ytile.exe in place before anything downstream
-      # (zip, checksums, winget manifests) sees them. The submit step blocks
-      # until the signing request is manually approved at app.signpath.io —
-      # that approval is a SignPath Foundation requirement, not a choice.
-      # Setup runbook: packaging/signpath/README.md.
-      - name: Upload unsigned binaries
-        if: env.SIGNPATH_API_TOKEN != ''
-        id: unsigned
-        uses: actions/upload-artifact@v7
+      # (the ykeys bundle, zip, checksums, winget manifests) sees them. Fully
+      # automatic — OIDC login as a managed identity, no secrets, no approval
+      # pause. Setup runbook: packaging/signing/README.md.
+      - name: Azure login (OIDC)
+        if: env.AZURE_CLIENT_ID != ''
+        uses: azure/login@v3
         with:
-          name: unsigned-binaries
-          path: |
-            publish/ytiled.exe
-            publish/ytile.exe
-          retention-days: 1
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Sign binaries (SignPath)
-        if: env.SIGNPATH_API_TOKEN != ''
-        uses: signpath/github-action-submit-signing-request@v2
+      # Runs before Bundle ykeys, so the folder filter only ever sees our two
+      # exes; ykeys.exe arrives already signed from its own repo's release.
+      - name: Sign binaries (Artifact Signing)
+        if: env.AZURE_CLIENT_ID != ''
+        uses: azure/artifact-signing-action@v2
         with:
-          api-token: ${{ env.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ytile
-          signing-policy-slug: release-signing
-          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
-          wait-for-completion: true
-          # Leave time for a human to approve the request in the SignPath UI.
-          wait-for-completion-timeout-in-seconds: '3600'
-          output-artifact-directory: publish/signed
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: aegiosot
+          certificate-profile-name: release-signing
+          files-folder: ${{ github.workspace }}\publish
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
-      - name: Replace binaries with signed ones
-        if: env.SIGNPATH_API_TOKEN != ''
+      - name: Verify signatures
+        if: env.AZURE_CLIENT_ID != ''
         run: |
-          Copy-Item publish/signed/ytiled.exe, publish/signed/ytile.exe -Destination publish -Force
           $version = $env:TAG.TrimStart('v')
           foreach ($exe in 'ytiled', 'ytile') {
             $sig = Get-AuthenticodeSignature "publish/$exe.exe"
