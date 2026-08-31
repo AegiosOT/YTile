@@ -34,6 +34,58 @@ public sealed class ConfigTests
     }
 
     [TestMethod]
+    public void BuiltInRules_IgnoreInstallers()
+    {
+        var config = new YTileConfig();
+        foreach (string exe in new[]
+        {
+            "msiexec.exe",          // every MSI, install and uninstall
+            "setup.exe",
+            "Setup.exe",            // case-insensitive
+            "installer.exe",
+            "unins000.exe",         // Inno Setup uninstaller
+            "vc_redist.x64.exe",
+            "vlc-3.0.20-win64-setup.exe",
+            "PowerToys_setup.exe",
+            "Zoom Installer.exe",
+        })
+        {
+            var w = Window(exe: exe);
+            Assert.AreEqual(RuleAction.Ignore, config.RuleFor(in w), $"{exe} should not tile");
+        }
+
+        // Installer UI whatever the exe is called.
+        foreach (string cls in new[] { "MsiDialogCloseClass", "TWizardForm", "TUninstallProgressForm", "InstallShieldWizard" })
+        {
+            var w = Window(exe: "someapp.exe", cls: cls);
+            Assert.AreEqual(RuleAction.Ignore, config.RuleFor(in w), $"class {cls} should not tile");
+        }
+    }
+
+    [TestMethod]
+    public void BuiltInRules_InstallerPatternDoesNotOverMatch()
+    {
+        var config = new YTileConfig();
+        foreach (string exe in new[]
+        {
+            "SetupDesigner.exe",    // contains "setup" but is not one
+            "installerator.exe",    // ditto
+            "uninstallme.exe",
+            "chrome.exe",
+            "Code.exe",
+            "WindowsTerminal.exe",
+        })
+        {
+            var w = Window(exe: exe);
+            Assert.IsNull(config.RuleFor(in w), $"{exe} must still tile");
+        }
+
+        // The generic Win32 dialog class must never be swallowed wholesale.
+        var dialog = Window(exe: "notepad.exe", cls: "#32770");
+        Assert.IsNull(config.RuleFor(in dialog));
+    }
+
+    [TestMethod]
     public void Rules_MatchByFieldAndStrategy()
     {
         var prefix = new WindowRule(RuleField.Class, RuleStrategy.Prefix, "Chrome_WidgetWin_", RuleAction.Float);

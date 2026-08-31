@@ -68,20 +68,43 @@ internal sealed class WindowRule(RuleField field, RuleStrategy strategy, string 
 /// </summary>
 internal sealed class YTileConfig
 {
-    /// <summary>Status bars must never be tiled, whichever bar the user runs —
-    /// and neither must OS security prompts: the Windows Security dialog
-    /// (Hello PIN, passkeys, smart cards) is a transient topmost popup that
-    /// must float above the layout, not be squeezed into a cell and retile
-    /// everything twice on its way through.</summary>
+    /// <summary>
+    /// Windows that must never be tiled, whatever the user's config says.
+    /// Status bars, because tiling the bar defeats the point; OS security
+    /// prompts and installers, because both are transient popups the user is
+    /// mid-interaction with — squeezing one into a cell retiles every real
+    /// window around it, then retiles again when it closes.
+    /// </summary>
     private static readonly WindowRule[] BuiltInRules =
     [
         new(RuleField.Exe, RuleStrategy.Equals, "komorebi-bar.exe", RuleAction.Ignore),
         new(RuleField.Exe, RuleStrategy.Equals, "ybar.exe", RuleAction.Ignore),
         new(RuleField.Exe, RuleStrategy.Equals, "zebar.exe", RuleAction.Ignore),
         new(RuleField.Exe, RuleStrategy.Equals, "yasb.exe", RuleAction.Ignore),
+
+        // Windows Security: Hello PIN, passkeys, smart cards.
         new(RuleField.Exe, RuleStrategy.Equals, "CredentialUIBroker.exe", RuleAction.Ignore),
         new(RuleField.Class, RuleStrategy.Equals, "Credential Dialog Xaml Host", RuleAction.Ignore),
+
+        // Installers. msiexec covers every MSI (install AND uninstall); the
+        // wizard classes catch MSI's and Inno Setup's own windows whatever the
+        // exe is called; the name pattern catches the NSIS/bundle convention
+        // (setup.exe, App-1.2-setup.exe, unins000.exe). Deliberately NOT
+        // matching class "#32770" — that is the generic Win32 dialog class,
+        // shared with countless windows that should still tile.
+        new(RuleField.Exe, RuleStrategy.Equals, "msiexec.exe", RuleAction.Ignore),
+        new(RuleField.Exe, RuleStrategy.Regex, InstallerExePattern, RuleAction.Ignore),
+        new(RuleField.Class, RuleStrategy.Equals, "MsiDialogCloseClass", RuleAction.Ignore),
+        new(RuleField.Class, RuleStrategy.Equals, "TWizardForm", RuleAction.Ignore),
+        new(RuleField.Class, RuleStrategy.Equals, "TUninstallProgressForm", RuleAction.Ignore),
+        new(RuleField.Class, RuleStrategy.Prefix, "InstallShield", RuleAction.Ignore),
     ];
+
+    /// <summary>Anchored so it matches installer names, not apps that merely
+    /// contain the word: "setup.exe" and "vlc-3.0-setup.exe" match,
+    /// "SetupDesigner.exe" does not.</summary>
+    private const string InstallerExePattern =
+        @"^(setup|install|installer|uninstall|unins\d*|vc_redist\.[^.]+|.+[-_ ](setup|install|installer))\.exe$";
 
     public int Gap { get; private init; } = 8;
 

@@ -188,8 +188,14 @@ Auto-hide needs no setting at all: Windows already reports the reclaimed space
 in the work area, and layouts follow it.
 
 Rules match on `exe`/`class`/`title` with `equals` (default), `prefix`, or `regex`
-strategies; actions are `ignore` and `float`. Status bars (komorebi-bar, ybar,
-zebar, yasb) are ignored built-in. `ytile reload` applies changes live.
+strategies; actions are `ignore` and `float`. `ytile reload` applies changes live.
+
+Ignored built-in, so they float on top instead of disturbing the layout:
+status bars (komorebi-bar, ybar, zebar, yasb), the Windows Security prompt
+(Hello PIN, passkeys, smart cards), and installers — `msiexec.exe`, the MSI
+and Inno Setup wizard windows, and the usual naming conventions
+(`setup.exe`, `App-1.2-setup.exe`, `unins000.exe`). An installer these miss
+can be added with a rule of your own.
 
 ## Code signing
 
