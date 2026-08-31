@@ -68,13 +68,19 @@ internal sealed class WindowRule(RuleField field, RuleStrategy strategy, string 
 /// </summary>
 internal sealed class YTileConfig
 {
-    /// <summary>Status bars must never be tiled, whichever bar the user runs.</summary>
+    /// <summary>Status bars must never be tiled, whichever bar the user runs —
+    /// and neither must OS security prompts: the Windows Security dialog
+    /// (Hello PIN, passkeys, smart cards) is a transient topmost popup that
+    /// must float above the layout, not be squeezed into a cell and retile
+    /// everything twice on its way through.</summary>
     private static readonly WindowRule[] BuiltInRules =
     [
         new(RuleField.Exe, RuleStrategy.Equals, "komorebi-bar.exe", RuleAction.Ignore),
         new(RuleField.Exe, RuleStrategy.Equals, "ybar.exe", RuleAction.Ignore),
         new(RuleField.Exe, RuleStrategy.Equals, "zebar.exe", RuleAction.Ignore),
         new(RuleField.Exe, RuleStrategy.Equals, "yasb.exe", RuleAction.Ignore),
+        new(RuleField.Exe, RuleStrategy.Equals, "CredentialUIBroker.exe", RuleAction.Ignore),
+        new(RuleField.Class, RuleStrategy.Equals, "Credential Dialog Xaml Host", RuleAction.Ignore),
     ];
 
     public int Gap { get; private init; } = 8;

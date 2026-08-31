@@ -23,6 +23,17 @@ public sealed class ConfigTests
     }
 
     [TestMethod]
+    public void BuiltInRules_IgnoreWindowsSecurityPrompt()
+    {
+        var config = new YTileConfig();
+        var byExe = Window(exe: "CredentialUIBroker.exe", title: "Windows Security");
+        Assert.AreEqual(RuleAction.Ignore, config.RuleFor(in byExe));
+        // Belt for attribution quirks: the XAML host class alone must match too.
+        var byClass = Window(exe: "svchost.exe", cls: "Credential Dialog Xaml Host");
+        Assert.AreEqual(RuleAction.Ignore, config.RuleFor(in byClass));
+    }
+
+    [TestMethod]
     public void Rules_MatchByFieldAndStrategy()
     {
         var prefix = new WindowRule(RuleField.Class, RuleStrategy.Prefix, "Chrome_WidgetWin_", RuleAction.Float);
