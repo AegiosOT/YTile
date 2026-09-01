@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.IO.Pipes;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text.Json;
 using Microsoft.Win32;
 using YTile.Protocol;
@@ -8,7 +10,7 @@ namespace YTile.Cli;
 
 internal static class Program
 {
-    private const string Version = "0.1.8";
+    private const string Version = "0.1.9";
 
     private static int Main(string[] args)
     {
@@ -158,6 +160,16 @@ internal static class Program
         {
             FileName = File.Exists(sibling) ? sibling : "ytiled.exe",
         };
+        if (elevated && !IsAdminOnlyDirectory(
+                Path.GetDirectoryName(sibling) ?? AppContext.BaseDirectory, out string weak))
+        {
+            // Not fatal: the user consents at a UAC prompt, and nothing here
+            // survives the session. Still worth saying, because they are
+            // elevating a binary that other code running as them could swap.
+            Console.Error.WriteLine($"ytile: warning - {weak} in the install directory,");
+            Console.Error.WriteLine("       so anything running as you could replace the binary being elevated.");
+        }
+
         if (elevated)
         {
             // Windows only raises integrity through ShellExecute, which cannot
@@ -583,6 +595,99 @@ internal static class Program
         }
     }
 
+    // TrustedInstaller owns most of %ProgramFiles% and is not a SID that
+    // WellKnownSidType can name.
+    private const string TrustedInstallerSid =
+        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+
+    /// <summary>Rights that let a principal swap the binary out: directly, by
+    /// deleting it and writing its own, or by granting itself the rest.</summary>
+    private const FileSystemRights PlantingRights =
+        FileSystemRights.WriteData                      // also CreateFiles
+        | FileSystemRights.AppendData                   // also CreateDirectories
+        | FileSystemRights.Delete
+        | FileSystemRights.DeleteSubdirectoriesAndFiles
+        | FileSystemRights.WriteAttributes
+        | FileSystemRights.WriteExtendedAttributes
+        | FileSystemRights.ChangePermissions
+        | FileSystemRights.TakeOwnership;
+
+    /// <summary>Principals that are already administrators, so write access
+    /// gives an attacker nothing they would not already have. CREATOR OWNER
+    /// qualifies only because ownership is checked separately: it resolves to
+    /// whoever owns the directory, which must itself be safe.</summary>
+    private static bool IsAdminPrincipal(SecurityIdentifier sid)
+        => sid.IsWellKnown(WellKnownSidType.LocalSystemSid)
+        || sid.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid)
+        || sid.IsWellKnown(WellKnownSidType.CreatorOwnerSid)
+        || sid.Value == TrustedInstallerSid;
+
+    private static string Describe(SecurityIdentifier sid)
+    {
+        try
+        {
+            return sid.Translate(typeof(NTAccount)).Value;
+        }
+        catch (IdentityNotMappedException)
+        {
+            return sid.Value;
+        }
+    }
+
+    /// <summary>
+    /// Whether only administrators can change what lives in <paramref name="dir"/>.
+    ///
+    /// A logon task at run level HIGHEST hands its target a full administrator
+    /// token at every logon, with no prompt and nobody watching. Whoever can
+    /// replace the binary therefore inherits that token. In a per-user install
+    /// the ordinary medium-integrity token owns the directory outright, which
+    /// would turn an unprivileged file write into silent, persistent
+    /// administrator execution: the classic weakly-permissioned privileged-task
+    /// escalation. Refusing to register the task is the only honest answer.
+    ///
+    /// Ownership is checked as well as the DACL, because an owner holds an
+    /// implicit WRITE_DAC and can grant the rest straight back.
+    /// </summary>
+    private static bool IsAdminOnlyDirectory(string dir, out string reason)
+    {
+        try
+        {
+            DirectorySecurity sec = new DirectoryInfo(dir)
+                .GetAccessControl(AccessControlSections.Access | AccessControlSections.Owner);
+
+            if (sec.GetOwner(typeof(SecurityIdentifier)) is SecurityIdentifier owner
+                && !IsAdminPrincipal(owner))
+            {
+                reason = $"it is owned by {Describe(owner)}, who can rewrite its permissions at will";
+                return false;
+            }
+
+            foreach (AuthorizationRule entry in sec.GetAccessRules(true, true, typeof(SecurityIdentifier)))
+            {
+                if (entry is not FileSystemAccessRule rule
+                    || rule.AccessControlType != AccessControlType.Allow
+                    || (rule.FileSystemRights & PlantingRights) == 0
+                    || rule.IdentityReference is not SecurityIdentifier sid
+                    || IsAdminPrincipal(sid))
+                {
+                    continue;
+                }
+
+                reason = $"{Describe(sid)} can modify its contents";
+                return false;
+            }
+
+            reason = "";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // An unreadable ACL is not evidence of a safe one.
+            reason = $"its permissions could not be read ({ex.Message})";
+            return false;
+        }
+    }
+
     /// <summary>Registers the logon task that brings ytiled up elevated.
     /// /rl highest is the part that makes elevated windows tileable; /it keeps
     /// the task interactive-only so no password has to be stored. Neither is
@@ -590,6 +695,30 @@ internal static class Program
     /// run from an admin shell — after that, logon is silent forever.</summary>
     private static int RegisterElevatedTask(string command)
     {
+        // The task also launches ytiled.exe and ykeys.exe from beside this
+        // binary, each inheriting the elevated token, so the whole directory
+        // must be administrator-only, not merely the file named in /tr.
+        string dir = Path.GetDirectoryName(Environment.ProcessPath ?? "") is { Length: > 0 } d
+            ? d
+            : AppContext.BaseDirectory;
+        if (!IsAdminOnlyDirectory(dir, out string unsafeReason))
+        {
+            Console.Error.WriteLine($"ytile: refusing to register an elevated logon task for {dir}");
+            Console.Error.WriteLine($"       because {unsafeReason}.");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("A task at run level HIGHEST runs this binary with a full administrator token");
+            Console.Error.WriteLine("at every logon, with no prompt. Anything able to replace the file inherits");
+            Console.Error.WriteLine("that token, so it has to sit where only administrators can write.");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine(@"Reinstall for all users from an admin terminal (installs to %ProgramFiles%\ytile):");
+            Console.Error.WriteLine("    $env:YTILE_ALLUSERS = 1");
+            Console.Error.WriteLine("    irm https://raw.githubusercontent.com/AegiosOT/YTile/main/scripts/install.ps1 | iex");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("Or skip autostart and use 'ytile start --elevated', which prompts once per");
+            Console.Error.WriteLine("session instead of granting administrator silently forever.");
+            return 1;
+        }
+
         string user = $@"{Environment.UserDomainName}\{Environment.UserName}";
         bool ok = RunSchtasks(
             ["/create", "/tn", TaskName, "/tr", command, "/sc", "onlogon",

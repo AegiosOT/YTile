@@ -69,6 +69,8 @@ $env:YTILE_AUTOSTART = 1    # also start YTile at login
 $env:YTILE_START     = 1    # start the daemon when the install finishes
 $env:YTILE_VERSION   = 'v0.1.0'   # pin a version instead of latest
 $env:YTILE_UNINSTALL = 1    # remove YTile (config is left alone)
+$env:YTILE_ALLUSERS  = 1    # install to %ProgramFiles%\ytile (needs an admin
+                            # terminal); required for elevated autostart
 ```
 
 Re-run it any time to upgrade — it stops a running daemon first, since the
@@ -214,6 +216,37 @@ ytile autostart on --elevated   # registers a logon task at run level HIGHEST,
                                 # so there is no prompt at login (registering it
                                 # needs an admin terminal once)
 ```
+
+### Elevated autostart needs an administrator-only install
+
+`autostart on --elevated` registers a logon task at run level **HIGHEST**. That
+task runs `ytile.exe` with a full administrator token at every logon, with no
+prompt and nobody watching — so whatever can replace that binary inherits the
+token. In the default per-user install the ordinary, non-elevated you owns the
+directory outright, which would turn "write a file" into "run as administrator,
+silently, forever". That is the classic weakly-permissioned privileged-task
+escalation, and YTile refuses to set it up:
+
+```
+ytile: refusing to register an elevated logon task for C:\Users\you\AppData\Local\Programs\ytile
+       because it is owned by MACHINE\you, who can rewrite its permissions at will.
+```
+
+Install for all users instead, which puts the binaries under `%ProgramFiles%\ytile`
+where only administrators can write, and registers the task for you:
+
+```powershell
+# from an administrator PowerShell
+$env:YTILE_ALLUSERS  = 1
+$env:YTILE_AUTOSTART = 1
+irm https://raw.githubusercontent.com/AegiosOT/YTile/main/scripts/install.ps1 | iex
+```
+
+The check looks at both the permissions and the **owner** of the directory: an
+owner can rewrite a DACL whenever it likes, so an admin-only ACL on a folder you
+own would not actually be admin-only. If you would rather not have a
+permanently elevated daemon at all, skip autostart and use `ytile start
+--elevated` per session — it prompts, and nothing persists.
 
 The daemon logs which mode it is in at startup (`elevated: yes` / `elevated: no`).
 The CLI and the ykeys hotkey daemon keep working unelevated against an elevated

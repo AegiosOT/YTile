@@ -217,6 +217,7 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                         case WmMessage.ReaperTick:
                             ClearStaleDrag();
                             AnnounceReadyOnNewSubscriber();
+                            ReleaseOrphanedReservations();
                             ReassertTaskbarPolicy();
                             ReapDeadWindows();
                             VerifyCellFits();
@@ -306,6 +307,50 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
         }
         _lastAttachGeneration = generation;
         PublishEvent("ready");
+    }
+
+    // A bar reserves its strip with one fire-and-forget command and never takes
+    // it back — it gets no chance to when it crashes or is killed. The strip
+    // then stays dead for the rest of the daemon's life: windows tile around a
+    // bar that is not on screen. A reservation exists to serve an attached bar,
+    // so it lasts exactly as long as one is attached. Bars re-assert on every
+    // (re)subscribe, so one that comes back gets its strip straight back.
+    private bool _hadSubscribers;
+
+    private void ReleaseOrphanedReservations()
+    {
+        if (events.HasSubscribers)
+        {
+            _hadSubscribers = true;
+            return;
+        }
+
+        if (!_hadSubscribers)
+        {
+            return;
+        }
+        _hadSubscribers = false;
+
+        bool released = false;
+        foreach (MonitorCtx mc in _monitors)
+        {
+            if (mc.Reserved != (0, 0, 0, 0))
+            {
+                mc.Reserved = (0, 0, 0, 0);
+                released = true;
+            }
+        }
+
+        if (!released)
+        {
+            return;
+        }
+
+        Log("last subscriber left — released bar reservations");
+        if (!_paused)
+        {
+            RetileAll();
+        }
     }
 
     private void ReassertTaskbarPolicy()

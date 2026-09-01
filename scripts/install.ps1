@@ -19,6 +19,13 @@
         $env:YTILE_HOTKEYS   = ykeys|whkd|none   hotkey daemon `ytile start` and
                                     autostart bring up (default: ykeys, bundled)
         $env:YTILE_UNINSTALL = 1    remove YTile instead of installing it
+        $env:YTILE_ALLUSERS  = 1    install into %ProgramFiles%\ytile instead of
+                                    the user profile. Needs an elevated terminal,
+                                    and is REQUIRED for elevated autostart: a
+                                    logon task at run level HIGHEST must point at
+                                    a directory only administrators can write,
+                                    or replacing the binary would hand anyone
+                                    running as you an administrator token.
 #>
 [CmdletBinding()]
 param()
@@ -27,7 +34,12 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $Repo       = 'AegiosOT/YTile'
-$InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\ytile'
+# A per-user install lives somewhere the ordinary token owns outright, which is
+# fine on its own but cannot anchor an elevated logon task (see YTILE_ALLUSERS).
+$AllUsers   = [bool]$env:YTILE_ALLUSERS
+$InstallDir = if ($AllUsers) { Join-Path $env:ProgramFiles 'ytile' }
+              else { Join-Path $env:LOCALAPPDATA 'Programs\ytile' }
+$MachineEnv = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
 $ConfigDir  = Join-Path $env:USERPROFILE '.config\ytile'
 $ConfigPath = Join-Path $ConfigDir 'ytile.json'
 $StateDir   = Join-Path $env:LOCALAPPDATA 'ytile'
@@ -97,15 +109,22 @@ function Test-WingetCopy {
 # The user PATH is usually REG_EXPAND_SZ; [Environment]::SetEnvironmentVariable
 # reads it expanded and writes it back as REG_SZ, freezing entries other
 # installers left as %JAVA_HOME%\bin etc. Go through the registry raw instead.
+# An all-users install belongs on the machine PATH; a per-user one on the user
+# PATH. Same raw-registry treatment either way.
+function Open-EnvKey($writable) {
+    if ($AllUsers) { return [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($MachineEnv, $writable) }
+    return [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $writable)
+}
+
 function Get-UserPathRaw {
-    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+    $key = Open-EnvKey $false
     if (-not $key) { return '' }
     try { return [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
     finally { $key.Close() }
 }
 
 function Set-UserPathRaw($value) {
-    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    $key = Open-EnvKey $true
     try {
         $kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
         if ($key.GetValueNames() -contains 'Path') { $kind = $key.GetValueKind('Path') }
@@ -155,6 +174,14 @@ if ($env:YTILE_UNINSTALL) {
     if (Get-ItemProperty -Path $RunKey -Name YTile -ErrorAction SilentlyContinue) {
         Remove-ItemProperty -Path $RunKey -Name YTile
         Write-Step 'removed the autostart entry'
+    }
+    # An elevated install registers a logon task instead of the Run value.
+    # Leaving it behind would point Task Scheduler at a deleted binary.
+    & schtasks /query /tn YTile *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & schtasks /delete /tn YTile /f *> $null
+        if ($LASTEXITCODE -eq 0) { Write-Step 'removed the elevated autostart task' }
+        else { Write-Step 'could not remove the elevated autostart task - rerun from an admin terminal' }
     }
     # Hand back any Win+ shell hotkeys ykeys suppressed - a persistent per-user
     # registry setting that nothing else would ever undo. Best-effort, and it
@@ -244,7 +271,24 @@ try {
 }
 Write-Step "release $($release.tag_name)"
 
+if ($AllUsers) {
+    $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+             ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $admin) {
+        throw "YTILE_ALLUSERS=1 installs into $InstallDir, which needs an elevated terminal. Re-run this from an administrator PowerShell."
+    }
+}
+
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+if ($AllUsers) {
+    # Inherit %ProgramFiles%'s ACL rather than carrying over anything from a
+    # previous per-user layout: the whole point is that non-administrators
+    # cannot write here.
+    $acl = Get-Acl $InstallDir
+    $acl.SetAccessRuleProtection($false, $true)
+    Set-Acl -Path $InstallDir -AclObject $acl
+    Write-Step "install directory is administrator-only ($InstallDir)"
+}
 # An upgrade has to stop the daemon to overwrite its exe; remember to bring it
 # back afterwards, or the one-liner upgrade leaves the user without tiling.
 $wasRunning = [bool](Get-Process ytiled -ErrorAction SilentlyContinue)
@@ -395,7 +439,11 @@ if (-not (Test-Path $YKeysConfigPath)) {
 }
 
 if ($env:YTILE_AUTOSTART) {
-    $autostartArgs = @('autostart', 'on') + @($hotkeyFlag | Where-Object { $_ })
+    # Only an administrator-only install may anchor the HIGHEST-run-level logon
+    # task; ytile itself refuses otherwise, so ask for it only when it can work.
+    $elevatedFlag = if ($AllUsers) { '--elevated' } else { $null }
+    $autostartArgs = @('autostart', 'on') + @($elevatedFlag | Where-Object { $_ }) +
+                     @($hotkeyFlag | Where-Object { $_ })
     & (Join-Path $InstallDir 'ytile.exe') @autostartArgs
     # Native nonzero exits do not throw under EAP=Stop; an older pinned release
     # rejecting a hotkey flag must not masquerade as a successful install.
