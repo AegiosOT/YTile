@@ -276,9 +276,18 @@ try {
         throw "Release $($release.tag_name) has no SHA256SUMS.txt - it may still be uploading; retry in a minute."
     }
     Write-Step 'verifying checksums'
+    # GitHub serves release assets as application/octet-stream, so .Content is
+    # a Byte[], not a string - splitting that on newlines yields "102 97 57..."
+    # and every line fails the hash pattern, which used to fail the install as
+    # "no entry for ytiled.exe". Decode explicitly, and accept CRLF.
+    $sumsBody = (Invoke-WebRequest -Uri $sums.browser_download_url -UseBasicParsing).Content
+    $sumsText = if ($sumsBody -is [byte[]]) { [Text.Encoding]::UTF8.GetString($sumsBody) } else { [string]$sumsBody }
     $expected = @{}
-    foreach ($line in (Invoke-WebRequest -Uri $sums.browser_download_url -UseBasicParsing).Content -split "`n") {
+    foreach ($line in $sumsText -split "`r?`n") {
         if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(\S+)\s*$') { $expected[$matches[2]] = $matches[1].ToLower() }
+    }
+    if ($expected.Count -eq 0) {
+        throw "Could not parse SHA256SUMS.txt from release $($release.tag_name) - refusing to install unverified."
     }
     foreach ($name in $names) {
         if (-not $expected.ContainsKey($name)) {
