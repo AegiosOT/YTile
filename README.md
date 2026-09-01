@@ -199,17 +199,9 @@ can be added with a rule of your own.
 
 ## Code signing
 
-Release binaries are Authenticode-signed by CI via
-[Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/)
-with the maintainer's identity-validated certificate; releases up to v0.1.2
-predate the signing setup and are unsigned. Details in
+Signing is currently paused — releases ship unsigned while the publisher
+certificate moves to an organization identity. Details in
 [packaging/signing](packaging/signing/README.md).
-
-This program will not transfer any information to other networked systems
-unless specifically requested by the user or the person installing or
-operating it. (The daemon and CLI talk to each other over a local named pipe
-only; the install script downloads releases from GitHub when you run it.)
-
 ## License
 
 MIT — see [LICENSE](LICENSE). (Releases up to v0.1.3 were published under

@@ -1,49 +1,57 @@
-# Code signing — Azure Artifact Signing
+# Code signing
 
-Release binaries are Authenticode-signed by CI through
+**Signing is currently disabled.** Releases ship unsigned until the
+organization certificate below is in place.
+
+## Why it is paused
+
+Releases v0.1.3–v0.1.5 were signed through
 [Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/)
-(individual-developer identity validation; the certificate shows the
-maintainer's verified legal name as publisher). Signing is fully automatic —
-OIDC, no stored secrets, no approval pause. The signing steps in
-[.github/workflows/release.yml](../../.github/workflows/release.yml) are
-skipped while the `AZURE_CLIENT_ID` repository variable is absent, so
-releases keep working if signing is ever torn down.
+using an **individual** identity validation. Azure issues those certificates
+against a verified legal identity, so every signed binary carried the
+maintainer's legal name, city and state in its Authenticode subject —
+readable by anyone via Properties → Digital Signatures. The project is
+published under the **AegiosOT** handle, so that disclosure was withdrawn:
+those releases were deleted and the `AZURE_CLIENT_ID` repository variable was
+removed, which makes the signing steps in
+[release.yml](../../.github/workflows/release.yml) skip.
 
-## Azure resources (subscription NineFiveB)
+Nothing else about the Azure setup was torn down. The signing account
+(`aegiosot`, East US), the managed identity `ytile-release-signer`, and both
+repos' GitHub OIDC federated credentials are intact, as are the
+`AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` variables.
 
-| Resource | Value |
-| --- | --- |
-| Resource group | `ytile-signing` (East US) |
-| Signing account | `aegiosot` — endpoint `https://eus.codesigning.azure.net/` (Basic tier) |
-| Certificate profile | `release-signing` (Public Trust, daily-rotated 72h certs) |
-| Managed identity | `ytile-release-signer` — role *Artifact Signing Certificate Profile Signer* on the account |
+## Resuming under an organization
 
-## GitHub ↔ Azure trust (no secrets)
+Organization validation puts the **company name** on the certificate instead
+of a person, which is the outcome we want. Steps, in order:
 
-The managed identity carries two federated credentials, one per repo, each
-accepting GitHub OIDC tokens minted for the **`release` environment**:
+1. **Register the legal entity** (NineFiveB). Use a registered-agent address
+   if the registered address should not be a home address — the certificate
+   carries the entity's city and state, and the filing itself is public record.
+2. **Get the supporting identifiers** Azure's org validation checks against
+   public records: EIN, and a D-U-N-S number if requested (free from Dun &
+   Bradstreet, allow a few days).
+3. **Azure portal** → the `aegiosot` signing account → **Identity validations**
+   → new validation of type **Organization**, with the entity's legal name,
+   address, and a domain-matched contact email. Approval is not instant.
+4. **Certificate profile**: create a new Public Trust profile bound to that
+   validation (the old personal profile and validation should be deleted at
+   this point so nothing can sign with them again).
+5. **Re-enable CI**: add the `AZURE_CLIENT_ID` repository variable back to
+   both repos (the managed identity's client id — the other two variables are
+   still there). Nothing in the workflows needs editing; the gated steps
+   light up on their own.
+6. Cut a release and confirm the signature subject shows the organization,
+   not a person, before publishing anything further.
 
-- `repo:AegiosOT/YTile:environment:release`
-- `repo:AegiosOT/YKeys:environment:release`
+Until step 5, every release is unsigned: expect Smart App Control blocks,
+SmartScreen warnings, and a likely Defender false-positive on winget
+submissions — the reasons signing was introduced in the first place.
 
-The release job therefore declares `environment: release` and
-`permissions: id-token: write`; `azure/login@v3` exchanges the OIDC token,
-and `azure/artifact-signing-action@v2` signs `publish/*.exe` in place with
-RFC-3161 timestamping (`timestamp.acs.microsoft.com`), so signatures outlive
-the 72-hour certificates.
+## Cost note
 
-Repository variables (Actions → Variables) in each repo:
-`AZURE_CLIENT_ID` (the managed identity's client id), `AZURE_TENANT_ID`,
-`AZURE_SUBSCRIPTION_ID`. Plain variables, not secrets — none of them grant
-anything without an OIDC token from the `release` environment of these repos.
-
-## Renewals and gotchas
-
-- Identity validation expires and must be renewed by the maintainer in the
-  Azure portal (reminder emails start 60 days ahead). An expired validation
-  fails the signing step; releases can ship unsigned meanwhile by removing
-  the `AZURE_CLIENT_ID` variable.
-- The bundled `ykeys.exe` is signed by the **YKeys** repo's own release run —
-  YTile's signing step runs before the bundle lands, and its folder filter
-  only ever sees `ytiled.exe`/`ytile.exe`.
-- Basic tier: 5,000 signatures/month — two releases a day would not dent it.
+The Artifact Signing account bills ~$9.99/month whether or not it signs
+anything. If the organization route is going to take a while, deleting the
+account and recreating it later avoids paying for an idle service; the
+managed identity and federated credentials can stay.
