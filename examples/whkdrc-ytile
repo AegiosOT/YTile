@@ -34,6 +34,6 @@ alt + shift + oem_minus: ytile resize down -50
 alt + t            : ytile float
 alt + b            : ytile layout bsp
 alt + c            : ytile layout columns
-alt + r            : ytile retile
+alt + shift + x    : ytile retile
 alt + p            : ytile pause
 alt + shift + p    : ytile resume

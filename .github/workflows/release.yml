@@ -134,8 +134,8 @@ jobs:
       # hash: a retagged upstream release must fail loudly here, not ship.
       - name: Bundle ykeys
         env:
-          YKEYS_VERSION: '0.1.3'
-          YKEYS_SHA256: 6ed9f86308f1b1f2183ec5e7040c2a9430a59d893f7703e553100c9a52ded8f2
+          YKEYS_VERSION: '0.1.4'
+          YKEYS_SHA256: 2f69974012ccbf2fff22c1d99fa0a4115f08937d924cd96d241c72b43201fa43
           EXPECTED_SIGNER_CN: NineFiveB
         run: |
           $ProgressPreference = 'SilentlyContinue'

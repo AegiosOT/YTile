@@ -8,7 +8,7 @@ namespace YTile.Cli;
 
 internal static class Program
 {
-    private const string Version = "0.1.7-dev";
+    private const string Version = "0.1.7";
 
     private static int Main(string[] args)
     {

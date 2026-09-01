@@ -213,14 +213,13 @@ if ([Environment]::Is64BitOperatingSystem -eq $false) {
 
 # Which hotkey daemon `ytile start` / autostart should bring up.
 $hotkeys = if ($env:YTILE_HOTKEYS) { $env:YTILE_HOTKEYS.ToLower() } else {
-    # A plain upgrade must not switch a whkd setup to ykeys: preserve the
-    # flavor already in use — a whkd running in this session, or an autostart
-    # entry registered with --whkd, marks a whkd install.
+    # A plain upgrade must not switch a whkd setup to ykeys, so read the choice
+    # the user actually recorded: the autostart entry. Deliberately NOT a
+    # running whkd process — that is evidence of the past, not of intent, and
+    # someone trying ykeys with whkd still up would be silently kept on whkd.
     $entry  = Get-ItemProperty -Path $RunKey -Name YTile -ErrorAction SilentlyContinue
     $runCmd = if ($entry) { [string]$entry.YTile } else { '' }
-    $sessionWhkd = @(Get-Process whkd -ErrorAction SilentlyContinue |
-        Where-Object { $_.SessionId -eq (Get-Process -Id $PID).SessionId })
-    if ($sessionWhkd -or $runCmd -match '--whkd') { 'whkd' }
+    if ($runCmd -match '--whkd') { 'whkd' }
     elseif ($runCmd -match '--no-hotkeys') { 'none' }
     else { 'ykeys' }
 }
@@ -349,10 +348,12 @@ if (-not (Test-Path $ConfigPath)) {
     Write-Step "kept your existing config at $ConfigPath"
 }
 
-if ($hotkeys -eq 'ykeys') {
-    if (-not (Test-Path $YKeysConfigPath)) {
-        New-Item -ItemType Directory -Force -Path (Split-Path $YKeysConfigPath) | Out-Null
-        @'
+# Always seed the hotkey config when it is missing, whatever flavor is active:
+# a whkd user who later runs `ytile start` (or switches) would otherwise get a
+# daemon with nothing bound and no hint that a config was ever expected.
+if (-not (Test-Path $YKeysConfigPath)) {
+    New-Item -ItemType Directory -Force -Path (Split-Path $YKeysConfigPath) | Out-Null
+    @'
 {
   "hotkeys": {
     "alt+h": "ytile focus left",
@@ -382,16 +383,15 @@ if ($hotkeys -eq 'ykeys') {
     "alt+t": "ytile float",
     "alt+b": "ytile layout bsp",
     "alt+c": "ytile layout columns",
-    "alt+r": "ytile retile",
+    "alt+shift+x": "ytile retile",
     "alt+p": "ytile pause",
     "alt+shift+p": "ytile resume"
   }
 }
 '@ | Set-Content -Path $YKeysConfigPath -Encoding UTF8
-        Write-Step "wrote starter hotkeys to $YKeysConfigPath"
-    } else {
-        Write-Step "kept your existing hotkeys at $YKeysConfigPath"
-    }
+    Write-Step "wrote starter hotkeys to $YKeysConfigPath"
+} else {
+    Write-Step "kept your existing hotkeys at $YKeysConfigPath"
 }
 
 if ($env:YTILE_AUTOSTART) {
