@@ -156,6 +156,16 @@ if ($env:YTILE_UNINSTALL) {
         Remove-ItemProperty -Path $RunKey -Name YTile
         Write-Step 'removed the autostart entry'
     }
+    # Hand back any Win+ shell hotkeys ykeys suppressed - a persistent per-user
+    # registry setting that nothing else would ever undo. Best-effort, and it
+    # must run while ykeys.exe still exists, i.e. before InstallDir is deleted.
+    $ykeys = Join-Path $InstallDir 'ykeys.exe'
+    if (Test-Path $ykeys) {
+        try {
+            $out = & $ykeys shell-hotkeys restore 2>&1
+            if ($out -notmatch 'nothing to restore') { Write-Step 'restored the Windows shell hotkeys (takes effect at next sign-in)' }
+        } catch {}
+    }
     Remove-FromUserPath $InstallDir
     $dirs = @($InstallDir, $StateDir)
     # %LOCALAPPDATA%\ykeys belongs to whichever ykeys is in use; leave it to a

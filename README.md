@@ -152,6 +152,11 @@ bound, not just ytile. Chord syntax, key names, and details are in the
 apply live, and a chord some other program already owns is skipped with a
 log line in `%LOCALAPPDATA%\ykeys\ykeys.log`.
 
+Windows reserves chords like `Win+Q` and `Win+E` for itself, and YKeys will not
+steal a chord another program registered first. `ykeys shell-hotkeys` hands the
+`Win+`*letter* ones back when you ask it to — YTile itself never modifies your
+shell hotkeys. See the [YKeys README](https://github.com/AegiosOT/YKeys#readme).
+
 Prefer [whkd](https://github.com/LGUG2Z/whkd)? `ytile start --whkd` runs it
 instead of ykeys — see [examples/whkdrc-ytile](examples/whkdrc-ytile) — and
 `ytile start --no-hotkeys` runs neither.
