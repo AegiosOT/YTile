@@ -78,9 +78,24 @@ internal sealed class EventHub
                     Interlocked.Add(ref _count, -dead.Count);
                     foreach ((NamedPipeServerStream pipe, StreamWriter writer) in dead)
                     {
+                        // Two guards, not one. StreamWriter.Dispose() flushes, and a
+                        // subscriber reaches this list precisely because its write
+                        // already failed — so the flush throws nearly every time. A
+                        // single try around both would swallow that and never reach
+                        // pipe.Dispose(), leaking a named-pipe instance on every drop.
+                        // MaxInstances of those and the daemon cannot accept another
+                        // connection at all: hotkeys still fire, every `ytile` command
+                        // is refused at the pipe, and only a restart clears it.
                         try
                         {
                             writer.Dispose();
+                        }
+                        catch
+                        {
+                        }
+
+                        try
+                        {
                             pipe.Dispose();
                         }
                         catch

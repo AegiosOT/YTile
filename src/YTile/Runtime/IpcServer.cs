@@ -50,6 +50,10 @@ internal sealed class IpcServer(ChannelWriter<WmMessage> wm, EventHub events)
         return security;
     }
 
+    /// <summary>Consecutive accept failures, so a persistent fault is logged
+    /// once and then periodically rather than four times a second.</summary>
+    private int _acceptFailures;
+
     public async Task RunAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -65,6 +69,7 @@ internal sealed class IpcServer(ChannelWriter<WmMessage> wm, EventHub events)
                 await server.WaitForConnectionAsync(ct);
                 NamedPipeServerStream connected = server;
                 server = null; // the handler task owns it now
+                _acceptFailures = 0;
                 _ = Task.Run(() => HandleConnectionAsync(connected, ct), CancellationToken.None);
             }
             catch (OperationCanceledException)
@@ -73,7 +78,17 @@ internal sealed class IpcServer(ChannelWriter<WmMessage> wm, EventHub events)
             }
             catch (Exception ex)
             {
-                Log($"ipc error: {ex.Message}");
+                // This retries every 250ms for as long as the cause persists, so
+                // logging every attempt buries everything else — one wedged daemon
+                // produced 2464 identical lines. Say it immediately, then every ten
+                // seconds, with a running count so the duration is visible.
+                if (_acceptFailures++ == 0 || _acceptFailures % 40 == 0)
+                {
+                    Log(_acceptFailures == 1
+                        ? $"ipc error: {ex.Message}"
+                        : $"ipc error: {ex.Message} (x{_acceptFailures}, still failing)");
+                }
+
                 try
                 {
                     await Task.Delay(250, ct);
