@@ -18,3 +18,7 @@ publish/
 ## OS
 Thumbs.db
 Desktop.ini
+
+## Reference material only. YTile is C#; a tracked .rs file is never ours.
+## One was committed by accident and briefly published under our MIT LICENSE.
+*.rs
