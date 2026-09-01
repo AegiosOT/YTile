@@ -102,6 +102,8 @@ jobs:
 
       - name: Verify signatures
         if: env.AZURE_CLIENT_ID != ''
+        env:
+          EXPECTED_SIGNER_CN: NineFiveB
         run: |
           $version = $env:TAG.TrimStart('v')
           foreach ($exe in 'ytiled', 'ytile') {
@@ -110,6 +112,15 @@ jobs:
               throw "$exe.exe signature status is $($sig.Status)"
             }
             Write-Host "$exe.exe signed by: $($sig.SignerCertificate.Subject)"
+            # The publisher must be the organization. Status -eq Valid only
+            # proves the signature verifies, not WHO signed: a certificate
+            # profile pointed at a personal identity would sail through.
+            $cn = if ($sig.SignerCertificate.Subject -match 'CN=(?:"([^"]*)"|([^,]*))') {
+              if ($Matches[1]) { $Matches[1] } else { $Matches[2].Trim() }
+            } else { '' }
+            if ($cn -ne $env:EXPECTED_SIGNER_CN) {
+              throw "$exe.exe publisher is '$cn', expected '$($env:EXPECTED_SIGNER_CN)'"
+            }
             # Signing must not have broken the binary.
             $reported = (& "./publish/$exe.exe" --version) -join ''
             if ($LASTEXITCODE -ne 0 -or $reported -ne "$exe $version") {
