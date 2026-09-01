@@ -136,12 +136,23 @@ jobs:
         env:
           YKEYS_VERSION: '0.1.3'
           YKEYS_SHA256: 6ed9f86308f1b1f2183ec5e7040c2a9430a59d893f7703e553100c9a52ded8f2
+          EXPECTED_SIGNER_CN: NineFiveB
         run: |
           $ProgressPreference = 'SilentlyContinue'
           Invoke-WebRequest "https://github.com/AegiosOT/YKeys/releases/download/v$env:YKEYS_VERSION/ykeys.exe" -OutFile publish/ykeys.exe
           $hash = (Get-FileHash publish/ykeys.exe -Algorithm SHA256).Hash.ToLower()
           if ($hash -ne $env:YKEYS_SHA256) {
             throw "ykeys.exe hash mismatch: got $hash, pinned $env:YKEYS_SHA256"
+          }
+          # The bundled binary ships to users inside our zip, so hold it to the
+          # same publisher rule as our own — a pin bumped to a build signed by
+          # anyone else must not slip through on hash agreement alone.
+          $sig = Get-AuthenticodeSignature publish/ykeys.exe
+          $cn = if ($sig.SignerCertificate.Subject -match 'CN=(?:"([^"]*)"|([^,]*))') {
+            if ($Matches[1]) { $Matches[1] } else { $Matches[2].Trim() }
+          } else { '' }
+          if ($sig.Status -ne 'Valid' -or $cn -ne $env:EXPECTED_SIGNER_CN) {
+            throw "bundled ykeys.exe signature is $($sig.Status) by '$cn', expected Valid by '$($env:EXPECTED_SIGNER_CN)'"
           }
           $reported = (& ./publish/ykeys.exe --version) -join ''
           if ($LASTEXITCODE -ne 0 -or $reported -ne "ykeys $env:YKEYS_VERSION") {
