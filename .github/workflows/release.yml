@@ -123,8 +123,8 @@ jobs:
       # hash: a retagged upstream release must fail loudly here, not ship.
       - name: Bundle ykeys
         env:
-          YKEYS_VERSION: '0.1.2'
-          YKEYS_SHA256: cb98e79e1fb21d5df690b10da89bdf768a7694f2518a722f457ba2b312242628
+          YKEYS_VERSION: '0.1.3'
+          YKEYS_SHA256: 6ed9f86308f1b1f2183ec5e7040c2a9430a59d893f7703e553100c9a52ded8f2
         run: |
           $ProgressPreference = 'SilentlyContinue'
           Invoke-WebRequest "https://github.com/AegiosOT/YKeys/releases/download/v$env:YKEYS_VERSION/ykeys.exe" -OutFile publish/ykeys.exe

@@ -199,9 +199,8 @@ can be added with a rule of your own.
 
 ## Code signing
 
-Signing is currently paused — releases ship unsigned while the publisher
-certificate moves to an organization identity. Details in
-[packaging/signing](packaging/signing/README.md).
+Release binaries are Authenticode-signed by CI under the publisher
+**NineFiveB** — details in [packaging/signing](packaging/signing/README.md).
 ## License
 
 MIT — see [LICENSE](LICENSE). (Releases up to v0.1.3 were published under
