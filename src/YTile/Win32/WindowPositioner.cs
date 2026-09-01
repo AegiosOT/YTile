@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Graphics.Dwm;
@@ -26,10 +27,20 @@ internal static unsafe class WindowPositioner
         SET_WINDOW_POS_FLAGS.SWP_NOCOPYBITS |
         SET_WINDOW_POS_FLAGS.SWP_NOSENDCHANGING;
 
+    private const int ErrorAccessDenied = 5;
+
     /// <summary>Returns the adjusted rect actually requested from the OS, so the
-    /// caller can later verify whether the window honored it.</summary>
-    public static RectI Apply(nint hwndRaw, RectI cell, bool dryRun)
+    /// caller can later verify whether the window honored it.
+    /// <paramref name="accessDenied"/> reports the one failure that verifying
+    /// the rect afterwards cannot diagnose: UIPI forbids us from positioning a
+    /// window owned by a process at a higher integrity level, so SetWindowPos
+    /// is refused outright and the window never moves. Task Manager and the
+    /// other auto-elevating system tools land here whenever ytiled itself is
+    /// not elevated. Waiting cannot fix it — only restarting ytiled elevated
+    /// can — so the caller must stop treating the window as tiled.</summary>
+    public static RectI Apply(nint hwndRaw, RectI cell, bool dryRun, out bool accessDenied)
     {
+        accessDenied = false;
         var hwnd = new HWND(hwndRaw);
 
         RECT window = default;
@@ -52,7 +63,13 @@ internal static unsafe class WindowPositioner
             return adjusted;
         }
 
-        PInvoke.SetWindowPos(hwnd, HWND.Null, adjusted.X, adjusted.Y, adjusted.W, adjusted.H, Flags);
+        if (!PInvoke.SetWindowPos(hwnd, HWND.Null, adjusted.X, adjusted.Y, adjusted.W, adjusted.H, Flags))
+        {
+            // Every other failure (a window that died mid-call, most of all) is
+            // transient or self-correcting, and the reaper already handles it.
+            accessDenied = Marshal.GetLastPInvokeError() == ErrorAccessDenied;
+        }
+
         return adjusted;
     }
 

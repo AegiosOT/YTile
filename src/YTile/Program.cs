@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Principal;
 using System.Threading.Channels;
 using Windows.Win32;
 using Windows.Win32.UI.HiDpi;
@@ -10,7 +11,7 @@ namespace YTile;
 
 internal static class Program
 {
-    private const string Version = "0.1.8-dev";
+    private const string Version = "0.1.8";
 
     private static async Task<int> Main(string[] args)
     {
@@ -122,6 +123,13 @@ internal static class Program
         }
 
         Console.WriteLine($"ytiled {Version}{(dryRun ? " [dry-run]" : "")} — Ctrl+C to exit.");
+        // Worth a line in every log: an unelevated daemon silently cannot move
+        // windows owned by elevated processes, and that looks like a YTile bug
+        // rather than a Windows access check unless the log says otherwise.
+        Console.WriteLine(IsElevated()
+            ? "elevated: yes — windows owned by elevated processes can be tiled"
+            : "elevated: no — windows owned by elevated processes (Task Manager and other "
+              + "auto-elevating system tools) cannot be tiled; restart with 'ytile start --elevated'");
         var manager = new WindowManager(Version, dryRun, startPaused, config, events);
         await manager.RunAsync(wm.Reader, cts.Token);
 
@@ -134,5 +142,14 @@ internal static class Program
         instanceLock.Release();
         await Task.Delay(300, CancellationToken.None);
         return 0;
+    }
+
+    /// <summary>Whether this process holds an elevated token. UIPI lets us
+    /// position another window only when we are at or above its integrity
+    /// level, so this decides whether elevated windows are tileable at all.</summary>
+    private static bool IsElevated()
+    {
+        using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
     }
 }

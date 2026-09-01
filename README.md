@@ -95,7 +95,9 @@ pwsh scripts/publish.ps1    # NativeAOT ytiled.exe + ytile.exe -> publish/
 ```
 ytile start              # launch ytiled in the background
                          #   (logs to %LOCALAPPDATA%\ytile\ytiled.log)
+ytile start --elevated   # ...as administrator, so elevated windows tile too
 ytile autostart on       # launch it at every login (ytile autostart off|status)
+ytile autostart on --elevated   # ...elevated, via a highest-privilege logon task
 
 ytiled                   # or run it in the foreground (auto-pauses if komorebi.exe is running)
 ytiled --dry-run         # log every SetWindowPos/focus instead of applying it
@@ -188,6 +190,36 @@ status bars (komorebi-bar, ybar, zebar, yasb), the Windows Security prompt
 and Inno Setup wizard windows, and the usual naming conventions
 (`setup.exe`, `App-1.2-setup.exe`, `unins000.exe`). An installer these miss
 can be added with a rule of your own.
+
+## Elevated windows
+
+Windows will not let a program move a window belonging to a process at a higher
+integrity level. Task Manager auto-elevates on an administrator account, so an
+ordinary YTile refuses to tile it — `SetWindowPos` fails with `ERROR_ACCESS_DENIED`
+and the window never budges. This is a Windows access check, not something YTile
+can work around.
+
+YTile does not pretend otherwise. A window it is forbidden to move is floated
+rather than left holding a slot in the layout, with the reason in the log:
+
+```
+float 0x001E0C3E Taskmgr.exe — elevated window — restart with 'ytile start --elevated' to tile it
+```
+
+Run the daemon elevated and those windows tile like any other:
+
+```
+ytile start --elevated          # one UAC prompt now
+ytile autostart on --elevated   # registers a logon task at run level HIGHEST,
+                                # so there is no prompt at login (registering it
+                                # needs an admin terminal once)
+```
+
+The daemon logs which mode it is in at startup (`elevated: yes` / `elevated: no`).
+The CLI and the ykeys hotkey daemon keep working unelevated against an elevated
+daemon — YTile grants its own user access to the control pipe explicitly, because
+an elevated process's default ACL would otherwise lock out the very CLI that
+drives it.
 
 ## Code signing
 

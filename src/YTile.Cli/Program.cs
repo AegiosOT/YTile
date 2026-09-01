@@ -8,7 +8,7 @@ namespace YTile.Cli;
 
 internal static class Program
 {
-    private const string Version = "0.1.8-dev";
+    private const string Version = "0.1.8";
 
     private static int Main(string[] args)
     {
@@ -115,6 +115,7 @@ internal static class Program
     private static int Start(string[] extraArgs)
     {
         var hotkeys = HotkeyDaemon.YKeys;
+        bool elevated = false;
         var daemonArgs = new List<string>();
         foreach (string a in extraArgs)
         {
@@ -130,11 +131,14 @@ internal static class Program
                 case "--no-hotkeys":
                     hotkeys = HotkeyDaemon.None;
                     break;
+                case "--elevated":
+                    elevated = true;
+                    break;
                 case "--force" or "--dry-run":
                     daemonArgs.Add(a);
                     break;
                 default:
-                    Console.Error.WriteLine("usage: ytile start [--force] [--dry-run] [--whkd|--no-hotkeys]");
+                    Console.Error.WriteLine("usage: ytile start [--force] [--dry-run] [--elevated] [--whkd|--no-hotkeys]");
                     return 2;
             }
         }
@@ -153,15 +157,30 @@ internal static class Program
         var psi = new ProcessStartInfo
         {
             FileName = File.Exists(sibling) ? sibling : "ytiled.exe",
-            UseShellExecute = false,
-            CreateNoWindow = true,
+        };
+        if (elevated)
+        {
+            // Windows only raises integrity through ShellExecute, which cannot
+            // redirect the child's streams. That costs nothing here: --log
+            // already sends every line to the log file. Without elevation the
+            // daemon cannot position windows owned by elevated processes
+            // (Task Manager and the other auto-elevating system tools) — UIPI
+            // fails those SetWindowPos calls outright.
+            psi.UseShellExecute = true;
+            psi.Verb = "runas";
+            psi.WindowStyle = ProcessWindowStyle.Hidden;
+        }
+        else
+        {
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
             // Without this the daemon inherits our stdout/stderr handles and
             // holds them for its whole life, so anything that captures or pipes
             // `ytile start` blocks until the daemon exits. Nothing is lost:
             // --log sends the daemon's output to a file.
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
+            psi.RedirectStandardOutput = true;
+            psi.RedirectStandardError = true;
+        }
         psi.ArgumentList.Add("--log");
         foreach (string a in daemonArgs)
         {
@@ -172,6 +191,13 @@ internal static class Program
         try
         {
             proc = Process.Start(psi)!;
+        }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            // ERROR_CANCELLED: the user dismissed the UAC prompt. That is a
+            // decision, not a fault — say so without a stack-trace-shaped message.
+            Console.Error.WriteLine("ytile: elevation declined — ytiled was not started.");
+            return 1;
         }
         catch (Exception ex)
         {
@@ -450,16 +476,43 @@ internal static class Program
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string RunValueName = "YTile";
 
-    /// <summary>Manages the HKCU Run entry that launches `ytile start` at login.
-    /// The daemon still auto-pauses if komorebi is running, so an enabled entry
-    /// is safe even while another tiler owns the desktop.</summary>
+    /// <summary>Scheduled task used for elevated autostart. The Run key cannot
+    /// raise integrity — everything it launches starts at medium, and a medium
+    /// daemon cannot position windows owned by elevated processes. A logon task
+    /// registered at RunLevel HIGHEST can, and does it without a UAC prompt.</summary>
+    private const string TaskName = "YTile";
+
+    private const string AutostartUsage =
+        "usage: ytile autostart <on [--elevated] [--whkd|--no-hotkeys]|off|status>";
+
+    /// <summary>Manages the login entry that launches `ytile start` — an HKCU Run
+    /// value normally, a highest-privilege scheduled task with --elevated. The
+    /// daemon still auto-pauses if komorebi is running, so an enabled entry is
+    /// safe even while another tiler owns the desktop.</summary>
     private static int Autostart(string[] args)
     {
         string? mode = args.Length > 0 ? args[0] : null;
-        string? flag = args.Length == 2 && args[1] is "--whkd" or "--no-hotkeys" ? args[1] : null;
-        if (args.Length > 1 && (flag is null || mode is not ("on" or "enable")))
+        bool elevated = false;
+        string? flag = null;
+        for (int i = 1; i < args.Length; i++)
         {
-            Console.Error.WriteLine("usage: ytile autostart <on [--whkd|--no-hotkeys]|off|status>");
+            switch (args[i])
+            {
+                case "--elevated":
+                    elevated = true;
+                    break;
+                case "--whkd" or "--no-hotkeys":
+                    flag = args[i];
+                    break;
+                default:
+                    Console.Error.WriteLine(AutostartUsage);
+                    return 2;
+            }
+        }
+
+        if (args.Length > 1 && mode is not ("on" or "enable"))
+        {
+            Console.Error.WriteLine(AutostartUsage);
             return 2;
         }
 
@@ -470,6 +523,14 @@ internal static class Program
                 string self = Environment.ProcessPath
                     ?? Path.Combine(AppContext.BaseDirectory, "ytile.exe");
                 string command = $"\"{self}\" start{(flag is null ? "" : $" {flag}")}";
+                if (elevated)
+                {
+                    return RegisterElevatedTask(command);
+                }
+
+                // Both entries firing would start two daemons and let the
+                // single-instance lock decide at random which one survives.
+                RunSchtasks(["/delete", "/tn", TaskName, "/f"], out _);
                 using RegistryKey key = Registry.CurrentUser.CreateSubKey(RunKeyPath);
                 key.SetValue(RunValueName, command);
                 Console.WriteLine($"autostart on: {command}");
@@ -477,30 +538,121 @@ internal static class Program
             }
             case "off" or "disable":
             {
-                using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
-                if (key?.GetValue(RunValueName) is null)
+                bool removed;
+                using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true))
                 {
-                    Console.WriteLine("autostart was already off.");
-                    return 0;
+                    removed = key?.GetValue(RunValueName) is not null;
+                    if (removed)
+                    {
+                        key!.DeleteValue(RunValueName);
+                    }
                 }
-                key.DeleteValue(RunValueName);
-                Console.WriteLine("autostart off.");
+
+                // Off must mean off whichever way it was turned on.
+                if (RunSchtasks(["/delete", "/tn", TaskName, "/f"], out _))
+                {
+                    removed = true;
+                }
+
+                Console.WriteLine(removed ? "autostart off." : "autostart was already off.");
                 return 0;
             }
             case "status" or null:
             {
                 using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RunKeyPath);
-                Console.WriteLine(key?.GetValue(RunValueName) is string s
-                    ? $"autostart: on — {s}"
-                    : "autostart: off");
+                string? run = key?.GetValue(RunValueName) as string;
+                bool task = RunSchtasks(["/query", "/tn", TaskName], out _);
+                if (run is null && !task)
+                {
+                    Console.WriteLine("autostart: off");
+                    return 0;
+                }
+                if (run is not null)
+                {
+                    Console.WriteLine($"autostart: on — {run}");
+                }
+                if (task)
+                {
+                    Console.WriteLine($"autostart: on (elevated) — scheduled task \"{TaskName}\", run level highest");
+                }
                 return 0;
             }
             default:
-                Console.Error.WriteLine("usage: ytile autostart <on [--whkd|--no-hotkeys]|off|status>");
+                Console.Error.WriteLine(AutostartUsage);
                 return 2;
         }
     }
 
+    /// <summary>Registers the logon task that brings ytiled up elevated.
+    /// /rl highest is the part that makes elevated windows tileable; /it keeps
+    /// the task interactive-only so no password has to be stored. Neither is
+    /// grantable from a medium-integrity process, so this one command has to be
+    /// run from an admin shell — after that, logon is silent forever.</summary>
+    private static int RegisterElevatedTask(string command)
+    {
+        string user = $@"{Environment.UserDomainName}\{Environment.UserName}";
+        bool ok = RunSchtasks(
+            ["/create", "/tn", TaskName, "/tr", command, "/sc", "onlogon",
+             "/ru", user, "/it", "/rl", "highest", "/f"],
+            out string output);
+
+        if (!ok)
+        {
+            Console.Error.WriteLine("ytile: could not register the elevated autostart task.");
+            string detail = output.Trim();
+            if (detail.Length > 0)
+            {
+                Console.Error.WriteLine(detail);
+            }
+            Console.Error.WriteLine(
+                "Registering a highest-privilege task needs elevation — run this once from an admin terminal.");
+            return 1;
+        }
+
+        // A leftover Run value would start a second, unelevated daemon.
+        using (RegistryKey? key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true))
+        {
+            if (key?.GetValue(RunValueName) is not null)
+            {
+                key.DeleteValue(RunValueName);
+            }
+        }
+
+        Console.WriteLine($"autostart on (elevated): {command}");
+        Console.WriteLine($"Registered scheduled task \"{TaskName}\" at run level highest — no UAC prompt at logon.");
+        return 0;
+    }
+
+    /// <summary>ArgumentList, not a command string: the task's /tr value contains
+    /// both quotes and spaces, and hand-escaping that is how these break.</summary>
+    private static bool RunSchtasks(string[] arguments, out string output)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "schtasks.exe",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (string a in arguments)
+            {
+                psi.ArgumentList.Add(a);
+            }
+
+            using Process proc = Process.Start(psi)!;
+            output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+            return proc.ExitCode == 0;
+        }
+        catch (Exception ex)
+        {
+            output = ex.Message;
+            return false;
+        }
+    }
     /// <summary>Streams daemon notifications (one JSON per line) to stdout until
     /// the pipe closes — the integration point for bars and scripts.</summary>
     private static int Subscribe()
@@ -632,12 +784,20 @@ internal static class Program
 
             usage: ytile <command>
 
-              start [--force] [--dry-run] [--whkd|--no-hotkeys]
+              start [--force] [--dry-run] [--elevated] [--whkd|--no-hotkeys]
                                         launch ytiled in the background plus the
                                         bundled ykeys hotkey daemon (--whkd uses whkd
                                         instead, --no-hotkeys skips both;
+                                        --elevated runs the daemon as administrator,
+                                        the only way to tile windows owned by an
+                                        elevated process, such as Task Manager;
                                         logs to %LOCALAPPDATA%\ytile\ytiled.log)
-              autostart <on [--whkd|--no-hotkeys]|off|status>  run 'ytile start' at login
+              autostart <on [--elevated] [--whkd|--no-hotkeys]|off|status>
+                                        run 'ytile start' at login (--elevated
+                                        registers a highest-privilege logon task
+                                        instead of the Run key, so the daemon comes
+                                        up elevated with no UAC prompt; registering
+                                        it needs an admin terminal once)
               state                     show monitors, workspaces, and windows
               focus <left|right|up|down>   focus that way (crosses monitors at the edge)
               move  <left|right|up|down>   swap focused window that way (crosses monitors)

@@ -27,6 +27,11 @@ internal sealed class ManagedWindow(nint hwnd, uint pid, string exe)
     public long RequestedAtMs { get; set; }
     public bool PendingVerify { get; set; }
 
+    // Set when the OS refused the last SetWindowPos outright (UIPI: the window
+    // belongs to a higher-integrity process). Distinct from PendingVerify's
+    // "asked, waiting to see" — this one is a definitive no.
+    public bool PositionDenied { get; set; }
+
     // Set when the user explicitly re-tiled this window via 'ytile float':
     // respect that choice even if the window overflows its cell.
     public bool NoAutoFloat { get; set; }
@@ -1097,9 +1102,22 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
     }
 
     private void Retile(int monitor)
+        => RetileWorkspace(_monitors[monitor], _monitors[monitor].ActiveWs);
+
+    /// <summary>
+    /// Applies <paramref name="ws"/>'s layout. <paramref name="ws"/> need not be
+    /// the visible one: when the tileable area changes, a workspace nobody is
+    /// looking at still has to be recomputed, or its windows surface at the old
+    /// geometry the moment the user switches to it.
+    /// </summary>
+    private void RetileWorkspace(MonitorCtx mc, Workspace ws)
     {
-        MonitorCtx mc = _monitors[monitor];
-        Workspace ws = mc.ActiveWs;
+        // Verification reads the live window rect and floats whatever refused
+        // its cell — meaningful only for windows actually on screen. A cloaked
+        // window is not going to be measured by VerifyCellFits (it walks the
+        // active workspace), so arming the flag there would leave it set until
+        // the workspace came forward and then judge it on a stale request.
+        bool verify = !dryRun && ReferenceEquals(ws, mc.ActiveWs);
 
         if (ws.MonocleHwnd != 0)
         {
@@ -1108,15 +1126,16 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             {
                 RectI cell = mc.EffectiveWorkArea.Shrink(_config.Gap);
                 monocle.LastRect = cell;
-                RectI monoAdjusted = WindowPositioner.Apply(monocle.Hwnd, cell, dryRun);
+                RectI monoAdjusted = WindowPositioner.Apply(monocle.Hwnd, cell, dryRun, out bool monoDenied);
                 if (!dryRun)
                 {
+                    monocle.PositionDenied = monoDenied;
                     monocle.RequestedX = monoAdjusted.X;
                     monocle.RequestedY = monoAdjusted.Y;
                     monocle.RequestedW = monoAdjusted.W;
                     monocle.RequestedH = monoAdjusted.H;
                     monocle.RequestedAtMs = Environment.TickCount64;
-                    monocle.PendingVerify = true;
+                    monocle.PendingVerify = verify;
                 }
                 return;
             }
@@ -1132,24 +1151,37 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
             {
                 continue; // mid-drag; MoveResizeEnd will snap it back
             }
-            RectI adjusted = WindowPositioner.Apply(w.Hwnd, cells[i], dryRun);
+            RectI adjusted = WindowPositioner.Apply(w.Hwnd, cells[i], dryRun, out bool denied);
             if (!dryRun)
             {
+                w.PositionDenied = denied;
                 w.RequestedX = adjusted.X;
                 w.RequestedY = adjusted.Y;
                 w.RequestedW = adjusted.W;
                 w.RequestedH = adjusted.H;
                 w.RequestedAtMs = Environment.TickCount64;
-                w.PendingVerify = true;
+                w.PendingVerify = verify;
             }
         }
     }
 
+    /// <summary>
+    /// Recomputes EVERY workspace, not just the visible one on each monitor.
+    /// Every caller reaches here because the basis of the layout changed —
+    /// work area, resolution, the taskbar appearing or switching to auto-hide,
+    /// a config reload, a resume. Retiling only the active workspaces would
+    /// leave windows parked on hidden ones sized for the old area, and they
+    /// would surface overlapping the taskbar the moment you switched to them.
+    /// Per-window events still use Retile(monitor), which is active-only.
+    /// </summary>
     private void RetileAll()
     {
-        for (int i = 0; i < _monitors.Count; i++)
+        foreach (MonitorCtx mc in _monitors)
         {
-            Retile(i);
+            foreach (Workspace ws in mc.Workspaces)
+            {
+                RetileWorkspace(mc, ws);
+            }
         }
     }
 
@@ -1208,11 +1240,31 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
 
         long now = Environment.TickCount64;
         List<(nint Hwnd, int Monitor)>? overflow = null;
+        List<(nint Hwnd, int Monitor)>? denied = null;
         for (int m = 0; m < _monitors.Count; m++)
         {
             foreach (ManagedWindow w in _monitors[m].ActiveWs.Windows)
             {
-                if (!w.PendingVerify || w.NoAutoFloat || now - w.RequestedAtMs < 200 || w.Hwnd == _dragHwnd)
+                if (!w.PendingVerify || w.Hwnd == _dragHwnd)
+                {
+                    continue;
+                }
+
+                // UIPI refused the move, so this window can never reach its cell
+                // while ytiled runs unelevated. Unlike a clamped resize there is
+                // nothing to wait for, and NoAutoFloat cannot apply: the user's
+                // "keep it tiled" pin is a preference, and this is the OS saying
+                // no. Leaving it in the list would compute the whole layout
+                // around a window that never arrives.
+                if (w.PositionDenied)
+                {
+                    w.PendingVerify = false;
+                    w.PositionDenied = false;
+                    (denied ??= []).Add((w.Hwnd, m));
+                    continue;
+                }
+
+                if (w.NoAutoFloat || now - w.RequestedAtMs < 200)
                 {
                     continue;
                 }
@@ -1247,6 +1299,15 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 {
                     w.PendingVerify = false;
                 }
+            }
+        }
+
+        if (denied is not null)
+        {
+            foreach ((nint hwnd, int monitor) in denied)
+            {
+                FloatWindow(hwnd, monitor,
+                    "elevated window — restart with 'ytile start --elevated' to tile it");
             }
         }
 
@@ -1853,7 +1914,12 @@ internal sealed class WindowManager(string version, bool dryRun, bool startPause
                 _monitors[rm].Reserved = (rl, rt, rr, rb);
                 if (!_paused)
                 {
-                    Retile(rm);
+                    // The reservation changes this monitor's tileable area, so
+                    // its hidden workspaces are stale too — not just the visible one.
+                    foreach (Workspace rws in _monitors[rm].Workspaces)
+                    {
+                        RetileWorkspace(_monitors[rm], rws);
+                    }
                 }
                 Log($"monitor {rm} reserved l={rl} t={rt} r={rr} b={rb}");
                 PublishEvent("reserve");

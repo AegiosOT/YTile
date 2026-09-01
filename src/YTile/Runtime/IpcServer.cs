@@ -1,4 +1,6 @@
 using System.IO.Pipes;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text.Json;
 using System.Threading.Channels;
 using YTile.Protocol;
@@ -17,6 +19,37 @@ internal sealed class IpcServer(ChannelWriter<WmMessage> wm, EventHub events)
     public const string PipeName = "ytile";
     private const int MaxInstances = 8;
 
+    /// <summary>
+    /// Explicit ACL granting this user's SID access to the pipe. Without one the
+    /// pipe inherits the creating token's default DACL — and an ELEVATED token's
+    /// default DACL grants Administrators, which is a deny-only SID in the same
+    /// user's medium token. An elevated daemon would then publish a pipe that
+    /// its own CLI can see but not open, so `ytile` would report the daemon
+    /// missing and every ykeys hotkey would silently do nothing.
+    ///
+    /// The user SID is identical across the split token's two halves, so naming
+    /// it explicitly is what lets a medium CLI drive an elevated daemon. This
+    /// widens nothing: an unelevated daemon's pipe was always reachable by
+    /// anything running as this user, and the commands behind it only move
+    /// windows around.
+    /// </summary>
+    private static readonly PipeSecurity Security = BuildSecurity();
+
+    private static PipeSecurity BuildSecurity()
+    {
+        var security = new PipeSecurity();
+        using WindowsIdentity me = WindowsIdentity.GetCurrent();
+        if (me.User is not null)
+        {
+            security.AddAccessRule(new PipeAccessRule(me.User, PipeAccessRights.FullControl, AccessControlType.Allow));
+        }
+        security.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+            PipeAccessRights.FullControl,
+            AccessControlType.Allow));
+        return security;
+    }
+
     public async Task RunAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -26,8 +59,9 @@ internal sealed class IpcServer(ChannelWriter<WmMessage> wm, EventHub events)
             NamedPipeServerStream? server = null;
             try
             {
-                server = new NamedPipeServerStream(
-                    PipeName, PipeDirection.InOut, MaxInstances, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                server = NamedPipeServerStreamAcl.Create(
+                    PipeName, PipeDirection.InOut, MaxInstances, PipeTransmissionMode.Byte,
+                    PipeOptions.Asynchronous, inBufferSize: 0, outBufferSize: 0, Security);
                 await server.WaitForConnectionAsync(ct);
                 NamedPipeServerStream connected = server;
                 server = null; // the handler task owns it now
