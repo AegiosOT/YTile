@@ -177,11 +177,23 @@ if ($env:YTILE_UNINSTALL) {
     }
     # An elevated install registers a logon task instead of the Run value.
     # Leaving it behind would point Task Scheduler at a deleted binary.
-    & schtasks /query /tn YTile *> $null
-    if ($LASTEXITCODE -eq 0) {
-        & schtasks /delete /tn YTile /f *> $null
-        if ($LASTEXITCODE -eq 0) { Write-Step 'removed the elevated autostart task' }
-        else { Write-Step 'could not remove the elevated autostart task - rerun from an admin terminal' }
+    #
+    # $ErrorActionPreference is Stop for this script, and PowerShell turns a
+    # native command's stderr into a terminating NativeCommandError under it.
+    # `schtasks /query` writes to stderr whenever the task is simply absent -
+    # the normal case - so querying it would abort the whole uninstall. Drop to
+    # Continue for the two native calls and judge them by exit code instead.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & schtasks /query /tn YTile *> $null
+        if ($LASTEXITCODE -eq 0) {
+            & schtasks /delete /tn YTile /f *> $null
+            if ($LASTEXITCODE -eq 0) { Write-Step 'removed the elevated autostart task' }
+            else { Write-Step 'could not remove the elevated autostart task - rerun from an admin terminal' }
+        }
+    } finally {
+        $ErrorActionPreference = $prevEap
     }
     # Hand back any Win+ shell hotkeys ykeys suppressed - a persistent per-user
     # registry setting that nothing else would ever undo. Best-effort, and it
