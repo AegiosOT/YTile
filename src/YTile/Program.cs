@@ -11,7 +11,7 @@ namespace YTile;
 
 internal static class Program
 {
-    private const string Version = "0.1.9";
+    private const string Version = "0.1.10";
 
     private static async Task<int> Main(string[] args)
     {
