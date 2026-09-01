@@ -59,19 +59,6 @@ Monocle and sending windows between workspaces:
 irm https://raw.githubusercontent.com/AegiosOT/YTile/main/scripts/install.ps1 | iex
 ```
 
-Or via winget:
-
-```powershell
-winget install AegiosOT.YTile
-```
-
-Each release is submitted to [winget-pkgs](https://github.com/microsoft/winget-pkgs),
-so winget can lag a few days behind while the submission is moderated; the
-install script always serves the latest release immediately. Pick one channel —
-a copy from each ends up shadowing the other on your PATH (both installers warn
-about this; remove one with `winget uninstall AegiosOT.YTile` or
-`$env:YTILE_UNINSTALL = 1` + the script).
-
 Downloads the latest release into `%LOCALAPPDATA%\Programs\ytile`, adds it to
 your user PATH, and writes a starter config if you don't have one. Per-user, no
 admin rights, nothing outside your profile. Options go in the environment,
@@ -205,3 +192,8 @@ Release binaries are Authenticode-signed by CI under the publisher
 
 MIT — see [LICENSE](LICENSE). (Releases up to v0.1.3 were published under
 GPL-3.0; everything from v0.1.4 on is MIT.)
+
+One carve-out: [docs/komorebi-architecture-digest.md](docs/komorebi-architecture-digest.md)
+quotes short fragments of komorebi's comments and log strings as attributed
+citations. Those belong to komorebi's authors under the Komorebi License
+2.0.0 and are not covered by the MIT grant — see that file's header.
