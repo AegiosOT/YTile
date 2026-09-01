@@ -82,6 +82,18 @@ written for you). Prefer [whkd](https://github.com/LGUG2Z/whkd)? Set
 (see [examples/whkdrc-ytile](examples/whkdrc-ytile)); `--no-hotkeys` starts
 neither.
 
+### Scoop
+
+```powershell
+scoop bucket add ytile https://github.com/AegiosOT/scoop-ytile
+scoop install ytile
+```
+
+Scoop installs under your own profile, so `ytile autostart on --elevated` is
+refused there — see [Elevated windows](#elevated-windows). Everything else
+works the same, and `scoop update ytile` stops the daemon before replacing its
+binaries.
+
 ## Building
 
 Requires the .NET 10 SDK, plus VS Build Tools with the C++ workload for the
